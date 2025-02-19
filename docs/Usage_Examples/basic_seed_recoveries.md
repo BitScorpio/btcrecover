@@ -41,7 +41,7 @@ It will automatically run through four search phases that should take a few hour
 
 **Wallets with Compatibility Issues**(Due to not following derivation standards...)
 
-* Atomic Wallet. (Non-Standard and Unknown derivation ETH (And all ERC20 tokens), XRP)
+* Atomic Wallet. (Non-Standard derivation for ETH (And all ERC20 tokens), needs to be used with the `--checksinglexpubaddress`, XRP)
 * Abra Wallet. (Non-Standard seed format, first word is Non-BIP39 "at", the last 12 are BIP39 (and checksum) but unable to reproduce derivation)
 
 ## Examples
@@ -74,10 +74,13 @@ Seed from Yoroi, Adalite or Daedalus (Working as a software wallet), using a sta
 ```
 python seedrecover.py --wallet-type cardano --addrs stake1uxztdzzm4ljw9a0qmgregc8efgg56p2h3kj75kc6vmhfj2cyg0jmy --mnemonic "cave table seven there limit fat decorate middle gold ten battle trigger luggage demand"
 ```
-### Basic Tron Recoveries
-One missing word, address generation limit of 1. (So address needs to be in the first account)
+
+### Basic Ethereum Validator Recoveries
+Recovery for Ethereum Validator seeds is the same as a standard seed recovery, but uses the validators public key (Also known as Signing Key) in the place of an address.
+
+Example command for a seed with one missing word
 ```
-python seedrecover.py --wallet-type tron --addrs TLxkYzNpMCEz5KThVuZzoyjde1UfsJKof6 --mnemonic "have hint welcome skate cinnamon rabbit cable payment gift uncover column duck scissors wedding decorate under marine hurry scrub rapid change roast print arch" --addr-limit 1
+python seedrecover.py --mnemonic "spatial evolve range inform burst screen session kind clap goat force x" --addrs 869241e2743379b6aa5e01138d410851fb2e2f3923ccc19ca78e8b14b01d861f67f95e2e6b3be71a11b251680b42dd81 --wallet-type ethereumvalidator --addr-limit 1
 ```
 
 ### Basic Helium Recoveries
@@ -85,6 +88,7 @@ One missing word
 ```
 python seedrecover.py --wallet-type helium --addrs 13hP2Vb1XVcMYrVNdwUW4pF3ZDj8CnET92zzUHqYp7DxxzVASbB --mnemonic "arm hundred female steel describe tip physical weapon peace write advice"
 ```
+
 ### Basic Polkadot(Substrate) Recoveries
 One missing word, blank secret derivation path
 ```
@@ -94,4 +98,22 @@ python seedrecover.py --wallet-type polkadotsubstrate --addrs 13SsWBQSN6Se72PCaM
 One missing word, secret derivation path of "//hard/soft///btcr-test-password" The soft/hard derivation path is passed to the program via the --substrate-path argument and the password is treated the same as a passphrase (Without the leading ///)
 ```
 python seedrecover.py --wallet-type polkadotsubstrate --addrs 12uMBgecqfkHTYZE4GFRx847CwR7sfs2bTdPbPLpzeMDGFwC --mnemonic "toilet assume drama keen dust warrior stick quote palace imitate music disease" --passphrase-arg btcr-test-password --substrate-path //hard/soft
+```
+
+### Basic Stacks Recoveries
+One missing word, address generation limit of 10. (So will check the first 10 "accounts" for a given seed)
+```
+python seedrecover.py --wallet-type stacks --addrs SP11KHP08F4KQ06MWESBY48VMXRBK5NB0FSCRP779 --mnemonic "hidden kidney famous rich season gloom husband spring convince attitude boy" --addr-limit 10
+```
+
+### Basic Tron Recoveries
+One missing word, address generation limit of 1. (So address needs to be in the first account)
+```
+python seedrecover.py --wallet-type tron --addrs TLxkYzNpMCEz5KThVuZzoyjde1UfsJKof6 --mnemonic "have hint welcome skate cinnamon rabbit cable payment gift uncover column duck scissors wedding decorate under marine hurry scrub rapid change roast print arch" --addr-limit 1
+```
+
+### Basic Elrond Recoveries
+One missing word, address generation limit of 2. (So address needs to be in the first account)
+```
+python seedrecover.py --wallet-type elrond --addrs erd16jn439kmwgqj9j0xjnwk2swg0p7j2jrnvpp4p7htc7wypnx27ttqe9l98m --mnemonic "agree process hard hello artefact govern obtain wedding become robust fish bar alcohol about speak unveil mind bike shift latin pole base ugly artefact" --addr-limit 2
 ```

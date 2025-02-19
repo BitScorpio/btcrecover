@@ -101,6 +101,19 @@ def can_load_bitstring():
             is_bitstring_loadable = False
     return is_bitstring_loadable
 
+eth2_staking_deposit_available = None
+def can_load_staking_deposit():
+    global eth2_staking_deposit_available
+    if eth2_staking_deposit_available is None:
+        try:
+            from staking_deposit.key_handling.key_derivation.path import mnemonic_and_path_to_key
+            from py_ecc.bls import G2ProofOfPossession as bls
+
+            eth2_staking_deposit_available = True
+        except:
+            eth2_staking_deposit_available = False
+    return eth2_staking_deposit_available
+
 # Similar to unittest.skipUnless, except the first arg is a function returning a bool instead
 # of just a bool. This function isn't called until just before the test is to be run. This
 # permits checking the character mode (which isn't set until later) and prevents multiprocessing
@@ -217,6 +230,18 @@ class TestRecoveryFromMPK(unittest.TestCase):
         self.mpk_tester(btcrseed.WalletElectrum2,
                         "xpub661MyMwAqRbcGt6qtQ19Ttwvo5Dbf2cQdA2GMf9Xkjth8NqYXXordg3gLK1npATRm9Fr7d7fA5ziCwqEVMmzeRezofp8CEaru8pJ57zV8hN",
                         "spot deputy pencil nasty fire boss moral rubber bacon thumb thumb icon",
+                        expected_len=12)
+
+    def test_electrum27_xpub_keystore1_2fa_legacy(self):
+        self.mpk_tester(btcrseed.WalletElectrum2,
+                        "xpub69RkaG6zUND7ofAxz1GMsd5hAzYkwCV3zrGwfjmYyxDpzivHcRBSqAkYLsfe7MKWpgWBUGxtbj3Zd2bW6orp1tbWR2hVY37G7HYRzgbhdp9",
+                        "carry parade soul sell peace sphere upgrade tackle length tomorrow stick cactus",
+                        expected_len=12)
+
+    def test_electrum27_xpub_keystore1_2fa_segwit(self):
+        self.mpk_tester(btcrseed.WalletElectrum2,
+                        "Zpub6yEjvzHB3gpxx9S4fb1LZHn8FpFSYkoWifyv81zEYwJEA8c24J7NDqYsa4sFnHgkR2CrAe7pdXuoSkqAR6BMe6nukMnbPnsNRuBtqfmYZsd",
+                        "sunny innocent mail hen act wire wash wish divorce adjust toward canoe",
                         expected_len=12)
 
     def test_electrum2_xpub_legacy_ja(self):
@@ -347,11 +372,36 @@ class TestRecoveryFromMPK(unittest.TestCase):
                         "zpub6u5Ro8kyXwV3zueN2G8fUwJ1hHAjYN6Ld1VCK9KGMw6m2R5M8ZtqBCrp6aQXZVh9cJWGvSm4J8mBwSsYboYfR5Ybsv8LeSYYWQk5ZhHJE4a",
                         "ice stool great wine enough odor vocal crane owner magnet absent scare",
                         "m/84'/17'/0'/0")
+        
+class TestRecoveryFromCheckSum(unittest.TestCase):
 
+    def checksum_tester(self, wallet_type, expected_len, correct_mnemonic, **kwds):
+
+        # Don't call the wallet create with a path parameter if we don't have to. (for the same of compatibility across wallet types)
+        btcrseed.loaded_wallet = wallet_type.create_from_params()
+
+        # Convert the mnemonic string into a mnemonic_ids_guessde
+        btcrseed.loaded_wallet.config_mnemonic(mnemonic_guess=correct_mnemonic, expected_len=expected_len, **kwds)
+        correct_mnemonic = btcrseed.mnemonic_ids_guess
+
+        # Creates wrong mnemonic id guesses
+        wrong_mnemonic_iter = btcrseed.loaded_wallet.performance_iterator()
+
+        self.assertEqual(btcrseed.loaded_wallet.return_verified_password_or_false(
+            (wrong_mnemonic_iter.__next__(), wrong_mnemonic_iter.__next__())), (False, 2))
+        self.assertEqual(btcrseed.loaded_wallet.return_verified_password_or_false(
+            (wrong_mnemonic_iter.__next__(), correct_mnemonic, wrong_mnemonic_iter.__next__())), (correct_mnemonic, 2))
+
+    # I don't have a test v2 seed to test
+    # def test_blockchain_password_seedv2(self):
+    #     self.checksum_tester(btcrseed.BlockChainPasswordV2, 15,
+    #         "hill long stupid finally dream taught tree twice tea together bar useless diamond sanity serve")
+        
+    def test_blockchain_password_seedv3(self):
+        self.checksum_tester(btcrseed.BlockChainPasswordV3, 17,
+            "carve witch manage yerevan yerevan yerevan yerevan yerevan yerevan yerevan yerevan hardly hamburgers insiders hamburgers ignite infernal")
 
 is_sha3_loadable = None
-
-
 def can_load_keccak():
     global is_sha3_loadable
     if is_sha3_loadable is None:
@@ -366,15 +416,8 @@ def can_load_keccak():
 
 class TestRecoveryFromAddress(unittest.TestCase):
 
-    @classmethod
-    def setUpClass(cls):
-        try:
-            hashlib.new("ripemd160")
-        except ValueError:
-            raise unittest.SkipTest("requires that hashlib implements RIPEMD-160")
-
     def address_tester(self, wallet_type, the_address, the_address_limit, correct_mnemonic, test_path=None,
-                       pathlist_file=None, addr_start_index = 0, force_p2sh = False, **kwds):
+                       pathlist_file=None, addr_start_index = 0, force_p2sh = False, checksinglexpubaddress = False, force_p2tr = False, **kwds):
 
         if pathlist_file:
             test_path = btcrseed.load_pathlist("./derivationpath-lists/" + pathlist_file)
@@ -384,13 +427,17 @@ class TestRecoveryFromAddress(unittest.TestCase):
             wallet = wallet_type.create_from_params(addresses=[the_address],
                                                     address_limit=the_address_limit,
                                                     address_start_index=addr_start_index,
-                                                    force_p2sh=force_p2sh)
+                                                    force_p2sh=force_p2sh,
+                                                    checksinglexpubaddress=checksinglexpubaddress,
+                                                    force_p2tr=force_p2tr)
         else:
             wallet = wallet_type.create_from_params(addresses=[the_address],
                                                     address_limit=the_address_limit,
                                                     address_start_index=addr_start_index,
                                                     force_p2sh=force_p2sh,
-                                                    path=test_path)
+                                                    path=test_path,
+                                                    checksinglexpubaddress=checksinglexpubaddress,
+                                                    force_p2tr=force_p2tr,)
 
         # Convert the mnemonic string into a mnemonic_ids_guess
         wallet.config_mnemonic(correct_mnemonic, **kwds)
@@ -584,6 +631,18 @@ class TestRecoveryFromAddress(unittest.TestCase):
         self.address_tester(btcrseed.WalletBIP39, "bc1qv87qf7prhjf2ld8vgm7l0mj59jggm6ae5jdkx2", 2,
                             "element entire sniff tired miracle solve shadow scatter hello never tank side sight isolate "
                             "sister uniform advice pen praise soap lizard festival connect baby")
+    def test_p2tr_bip86_addr_BTC_defaultderivationpaths(self):
+        self.address_tester(btcrseed.WalletBIP39, "bc1prg35cfxqc23zwqfpnt3qxmay2xyw76jngxag0agpzj24lhs85qfqr8ualh", 1,
+                            "word hurdle hello session tail grace police castle minimum equal apple crunch")
+
+    def test_p2tr_addr_BTC_forceP2TR(self):
+        self.address_tester(btcrseed.WalletBIP39, "bc1pqgsnwqe99ug0ygndc3g4cpc680ze9fraex6ud2lcpktphr0xxkusq2tmpj", 1,
+                            "calm great hip soda enhance abuse tiny summer gloom depth shrug chronic", force_p2tr=True)
+
+    def test_p2tr_bip86_addr_BTC_ordinalswallet(self):
+        self.address_tester(btcrseed.WalletBIP39, "bc1pmpa44tpufkq0fhw4m09el9uh98jchnhky62mrqwa74du6k5hy4xs43606x", 1,
+                            "basket manage solve glide gravity deliver black wire spice gospel narrow seven",
+                            ["m/86'/0'/0'"])
 
     def test_bip44_addr_XRP(self):
         self.address_tester(btcrseed.WalletBIP39, "rJGNUmwiYDwXEsLzUFV9njhP3syrDvA6hs", 2,
@@ -751,6 +810,10 @@ class TestRecoveryFromAddress(unittest.TestCase):
         self.address_tester(btcrseed.WalletRipple, "rJGNUmwiYDwXEsLzUFV9njhP3syrDvA6hs", 2,
                             "certain come keen collect slab gauge photo inside mechanic deny leader drop")
 
+    def test_walletstacks_bip44(self):
+        self.address_tester(btcrseed.WalletStacks, "SP11KHP08F4KQ06MWESBY48VMXRBK5NB0FSCRP779", 2,
+                            "ocean hidden kidney famous rich season gloom husband spring convince attitude boy")
+
     def test_walletvertcoin_addr_bip44(self):
         self.address_tester(btcrseed.WalletVertcoin, "VwrYFHeKbneYZdkPWTpXsUs3ZQ4ERan9tG", 2,
                             "element entire sniff tired miracle solve shadow scatter hello never tank side sight isolate sister uniform "
@@ -866,6 +929,32 @@ class TestRecoveryFromAddress(unittest.TestCase):
         self.address_tester(btcrseed.WalletBCH, "bitcoincash:qz7753xzek843j50cgtc526wdmlpm5v5eyt92gznrt", 2,
                             "certain come keen collect slab gauge photo inside mechanic deny leader drop")
 
+    def test_singlexpubaddress_atomic_eth(self):
+        self.address_tester(wallet_type = btcrseed.WalletEthereum,
+                            the_address = "0xfa5E4Bb54b4f45841140b2EF03198EBA64ABa9DD",
+                            the_address_limit = 1,
+                            correct_mnemonic = "keen term crouch physical together vital oak predict royal quantum tomorrow chunk",
+                            checksinglexpubaddress = True)
+
+    def test_singlexpubaddress_mybitcoinwallet_single_legacy(self):
+        self.address_tester(wallet_type = btcrseed.WalletBIP39,
+                            the_address = "1EaGSR7uWp2hok3jTtNypjUuV3G4YyMxgt",
+                            the_address_limit = 1,
+                            correct_mnemonic = "spatial stereo thrive reform shallow blouse minimum foster eagle game answer worth size stumble theme crater bounce stay extra duty man weather awesome search",
+                            checksinglexpubaddress = True)
+
+    def test_singlexpubaddress_mybitcoinwallet_single_bech32(self):
+        self.address_tester(wallet_type = btcrseed.WalletBIP39,
+                            the_address = "bc1qymj3j8qkyk8ukhczg80tm0jyfh4rzxyqnngsqh",
+                            the_address_limit = 1,
+                            correct_mnemonic = "spatial stereo thrive reform shallow blouse minimum foster eagle game answer worth size stumble theme crater bounce stay extra duty man weather awesome search",
+                            checksinglexpubaddress = True)
+
+    @skipUnless(can_load_PyCryptoHDWallet, "requires Py_Crypto_HD_Wallet module")
+    def test_WalletPyCryptoHDWallet_MultiverseX(self):
+        self.address_tester(btcrseed.WalletMultiversX, "erd16jn439kmwgqj9j0xjnwk2swg0p7j2jrnvpp4p7htc7wypnx27ttqe9l98m", 2,
+                            "agree process hard hello artefact govern obtain wedding become robust fish bar alcohol about speak unveil mind bike shift latin pole base ugly artefact")
+
     @skipUnless(can_load_PyCryptoHDWallet, "requires Py_Crypto_HD_Wallet module")
     def test_WalletPyCryptoHDWallet_Tron(self):
         self.address_tester(btcrseed.WalletTron, "TLDrhbxkBGa1doxtez2bEx4iQ3DmKg9UdM", 2,
@@ -875,6 +964,31 @@ class TestRecoveryFromAddress(unittest.TestCase):
     def test_WalletPyCryptoHDWallet_Cosmos(self):
         self.address_tester(btcrseed.WalletCosmos, "cosmos1t47f66q50ft66ypwn9x7laeectyvh23aqedfmq", 1,
                             "doctor giant eternal huge improve suit service poem logic dynamic crane summer exhibit describe later suit dignity ahead unknown fall syrup mirror nurse season")
+
+    @skipUnless(can_load_PyCryptoHDWallet, "requires Py_Crypto_HD_Wallet module")
+    def test_WalletPyCryptoHDWallet_Cosmos_NYM(self):
+        self.address_tester(btcrseed.WalletCosmos, "n1g35xm8264cw8gay757ctyqeuqyc0st2muvktx9", 1,
+                            "ocean hidden kidney famous rich season gloom husband spring convince attitude boy")
+    @skipUnless(can_load_PyCryptoHDWallet, "requires Py_Crypto_HD_Wallet module")
+    def test_WalletPyCryptoHDWallet_Cosmos_GravityBridge(self):
+        self.address_tester(btcrseed.WalletCosmos, "gravity1g35xm8264cw8gay757ctyqeuqyc0st2m2cn3ug", 1,
+                            "ocean hidden kidney famous rich season gloom husband spring convince attitude boy")
+
+    @skipUnless(can_load_PyCryptoHDWallet, "requires Py_Crypto_HD_Wallet module")
+    def test_WalletPyCryptoHDWallet_SecretNetworkNew(self):
+        self.address_tester(btcrseed.WalletSecretNetworkNew, "secret1788gts0a69v5fckayds5cz9n3y4zfmtqct5qxc", 1,
+                            "doctor giant eternal huge improve suit service poem logic dynamic crane summer exhibit describe later suit dignity ahead unknown fall syrup mirror nurse season")
+
+    @skipUnless(can_load_PyCryptoHDWallet, "requires Py_Crypto_HD_Wallet module")
+    def test_WalletPyCryptoHDWallet_SecretNetworkOld(self):
+        self.address_tester(btcrseed.WalletSecretNetworkOld, "secret1t47f66q50ft66ypwn9x7laeectyvh23azueqxu", 1,
+                            "doctor giant eternal huge improve suit service poem logic dynamic crane summer exhibit describe later suit dignity ahead unknown fall syrup mirror nurse season")
+    @skipUnless(can_load_PyCryptoHDWallet, "requires Py_Crypto_HD_Wallet module")
+    def test_WalletPyCryptoHDWallet_Tezos(self):
+        self.address_tester(btcrseed.WalletTezos, "tz1UXZKEq7SsveAi1jpKBeigcdoFHmVopHKq", 1,
+                            "cake return enhance slender swap butter code cram fashion warm uphold adapt swarm slight misery enhance almost ability artefact lava sugar regret example lake")
+
+
 
     @skipUnless(can_load_PyCryptoHDWallet, "requires Py_Crypto_HD_Wallet module")
     def test_WalletPyCryptoHDWallet_Avalanche(self):
@@ -920,6 +1034,12 @@ class TestRecoveryFromAddress(unittest.TestCase):
                             "first focus motor give search custom grocery suspect myth popular trigger praise",
                             pathlist_file="Electrum.txt",
                             expected_len=12)
+
+    def test_pathfile_BTC_Electrum_Cakewallet(self):
+        self.address_tester(btcrseed.WalletElectrum2, "bc1qdffmstsyhg36z3quqr36e0qupn28eazwnctpa7", 5,
+                            "index convince purpose truly warfare super vendor cheap maid juice runway normal virus toddler invite hammer trumpet health heavy relax degree glide unveil fury",
+                            pathlist_file="Electrum.txt",
+                            expected_len=24)
 
     def test_pathfile_BTC_BRD(self):
         self.address_tester(btcrseed.WalletBIP39, "1FpWokPArYJKkWWiTqsnoVaFJL4PM3Nqdf", 2,
@@ -972,6 +1092,11 @@ class TestRecoveryFromAddress(unittest.TestCase):
         self.address_tester(btcrseed.WalletEthereum, "0x1a05a75E4041eFB46A34F208b677F82C079197D8", 2,
                             "talk swamp tool right wide vital midnight cushion fiber blouse field transfer",
                             pathlist_file="ETH.txt")
+
+    @unittest.skipUnless(can_load_staking_deposit(), "requires staking-deposit and py_ecc")
+    def test_eth_validator(self):
+        self.address_tester(btcrseed.WalletEthereumValidator, "94172eb62472af0fb61dc8f66cde031d06b7bd39bda86dd2213b2eb283f710d16f38009bc2e03dc967b2c3548dd4f73f", 2,
+                            "spatial evolve range inform burst screen session kind clap goat force sort")
 
     def test_pathfile_BCH_Unsplit(self):
         self.address_tester(btcrseed.WalletBIP39, "1AiAYaVJ7SCkDeNqgFz7UDecycgzb6LoT3", 2,
@@ -1449,6 +1574,12 @@ class TestRecoveryFromAddressDB(unittest.TestCase):
                               "element entire sniff tired miracle solve shadow scatter hello never tank side sight isolate sister uniform advice pen praise soap lizard festival connect baby",
                               "m/84'/0'/1'/0", "addresses-BTC-Test.db")
 
+    # m/86'/0'/0'/0/1   bc1pqx93u4lpl38fkqe7z89tuswahzug0zvtc4jzpecw0c420n0n9wlq4euhxp
+    def test_addressdb_bip86_btc(self):
+        self.addressdb_tester(btcrseed.WalletBIP39, 2,
+                              "swing wedding strike accuse walk reduce immense blur rotate south myself memory",
+                              "m/86'/0'/0'/0", "addresses-BTC-P2TR.db")
+
     # LTC AddressDB Tests
     # m/44'/2'/1'/0/1	LgXiUTLMKcoaqvUPMNJo1RmpAGFMHD75tr
     def test_addressdb_bip44_ltc(self):
@@ -1633,17 +1764,25 @@ class TestRecoverySeedListsGenerators(unittest.TestCase):
                                                                 'oyster', 'team', 'home', 'april', 'travel',
                                                                 'barrel']]])
 
+    def test_seedlist_allpositional_tokenblocks(self):
+        self.tokenlist_tester("tokenlist-tokenblocks.txt",
+                              [[['elbow', 'text', 'print', 'census', 'battle', 'push',
+                                                                'oyster', 'team', 'home', 'april', 'travel',
+                                                                'barrel']]],
+                              max_tokens = 3,
+                              min_tokens = 3)
+
     def test_tokenlist(self):
         self.tokenlist_tester("SeedTokenListTest.txt")
 
-    def tokenlist_tester(self, tokenlistfile, correct_seedlist=None):
+    def tokenlist_tester(self, tokenlistfile, correct_seedlist=None, max_tokens = 12, min_tokens = 12):
         if correct_seedlist is None:
             correct_seedlist = self.expected_passwordlist
         # Check to see if the Token List file exists (and if not, skip)
         if not os.path.isfile("./btcrecover/test/test-listfiles/" + tokenlistfile):
             raise unittest.SkipTest("requires ./btcrecover/test/test-listfiles/" + tokenlistfile)
 
-        args = " --listpass --seedgenerator --max-tokens 12 --min-tokens 12".split()
+        args = (" --listpass --seedgenerator --max-tokens " + str(max_tokens) + " --min-tokens " +  str(min_tokens)).split()
 
         btcrpass.parse_arguments(["--tokenlist"] + ["./btcrecover/test/test-listfiles/" + tokenlistfile] + args,
                                  disable_security_warning_param=True)
@@ -1651,6 +1790,46 @@ class TestRecoverySeedListsGenerators(unittest.TestCase):
         generated_passwords = list(tok_it)
         self.assertEqual(generated_passwords, correct_seedlist)
 
+    def test_seed_transforms_swaps_1(self):
+        self.seed_transform_tester(correct_seedlist=
+                                   [[('1', '2', '3'),
+                                     ('2', '1', '3'),
+                                     ('3', '2', '1'),
+                                     ('1', '3', '2')]],
+                              transformArgument = "--seed-transform-wordswaps 1")
+
+    def test_seed_transforms_swaps_2(self):
+        self.seed_transform_tester(correct_seedlist=
+                                   [[('1', '2', '3'),
+                                     ('2', '1', '3'),
+                                     ('1', '2', '3'),
+                                     ('3', '1', '2'),
+                                     ('2', '3', '1'),
+                                     ('3', '2', '1'),
+                                     ('2', '3', '1'),
+                                     ('1', '2', '3'),
+                                     ('3', '1', '2'),
+                                     ('1', '3', '2'),
+                                     ('3', '1', '2'),
+                                     ('2', '3', '1'),
+                                     ('1', '2', '3')]],
+                              transformArgument = "--seed-transform-wordswaps 2")
+    def seed_transform_tester(self, correct_seedlist=None, transformArgument = None):
+        if correct_seedlist is None:
+            correct_seedlist = self.expected_passwordlist
+
+        # Check to see if the Token List file exists (and if not, skip)
+        if not os.path.isfile("./btcrecover/test/test-listfiles/Seed-Transform-Base.txt"):
+            raise unittest.SkipTest("requires ./btcrecover/test/test-listfiles/Seed-Transform-Base.txt")
+
+        args = (" --listpass --seedgenerator --max-tokens 1 --min-tokens 1 " + transformArgument).split()
+
+        btcrpass.parse_arguments(["--tokenlist"] + ["./btcrecover/test/test-listfiles/Seed-Transform-Base.txt"] + args,
+                                 disable_security_warning_param=True)
+
+        tok_it, skipped = btcrpass.password_generator_factory(sys.maxsize)
+        generated_passwords = list(tok_it)
+        self.assertEqual(generated_passwords, correct_seedlist)
 
 # All seed tests except TestAddressSet.test_false_positives are quick
 class QuickTests(unittest.TestSuite):

@@ -22,18 +22,19 @@
 # TODO: put everything in a class?
 # TODO: pythonize comments/documentation
 
-__version__          =  "1.11.0-Cryptoguide"
+__version__          =  "1.13.0-Cryptoguide"
 __ordering_version__ = b"0.6.4"  # must be updated whenever password ordering changes
 disable_security_warnings = True
 
 # Import modules included in standard libraries
 import sys, argparse, itertools, string, re, multiprocessing, signal, os, pickle, gc, \
-       time, timeit, hashlib, collections, base64, struct, atexit, zlib, math, json, numbers, datetime, binascii
+       time, timeit, hashlib, collections, base64, struct, atexit, zlib, math, json, numbers, datetime, binascii, gzip
 
 # Import modules bundled with BTCRecover
 import btcrecover.opencl_helpers
 import lib.cardano.cardano_utils as cardano
 from lib.eth_hash.auto import keccak
+from lib.mnemonic_btc_com_tweaked import Mnemonic
 
 module_leveldb_available = False
 try:
@@ -42,6 +43,19 @@ try:
     module_leveldb_available = True
 except:
     pass
+
+hashlib_ripemd160_available = False
+# Enable functions that may not work for some standard libraries in some environments
+try:
+    # this will work with micropython and python < 3.10
+    # but will raise and exception if ripemd is not supported (python3.10, openssl 3)
+    hashlib.new('ripemd160')
+    hashlib_ripemd160_available = True
+    def ripemd160(msg):
+        return hashlib.new('ripemd160', msg).digest()
+except:
+    # otherwise use pure python implementation
+    from lib.embit.py_ripemd160 import ripemd160
 
 # Import modules from requirements.txt
 from Crypto.Cipher import AES
@@ -108,12 +122,31 @@ try:
 except:
     pass
 
+# Modules dependant on SJCL
+sjcl_available = False
+try:
+    from sjcl import SJCL
+    sjcl_available = True
+except:
+    pass
 
 searchfailedtext = "\nAll possible passwords (as specified in your tokenlist or passwordlist) have been checked and none are correct for this wallet. You could consider trying again with a different password list or expanded tokenlist..."
 
-# The progressbar module is recommended but optional; it is typically
-# distributed with btcrecover (it is loaded later on demand)
+def load_customTokenWildcard(customTokenWildcardFile):
+    customTokenWildcards = ['']
+    if customTokenWildcardFile:
+        try:
+            customTokenWildcards_File = open(customTokenWildcardFile, "r", encoding="utf-8", errors='ignore')
+            customTokenWildcards_Lines = customTokenWildcards_File.readlines()
 
+            for customTokenWildcard in customTokenWildcards_Lines:
+                customTokenWildcards.append(customTokenWildcard.strip())
+            customTokenWildcards_File.close()
+        except Exception as e:
+            print(e)
+    return customTokenWildcards
+
+# Assemble and output some information about the current system and python environment.
 def full_version():
     from struct import calcsize
     return "btcrecover {} on Python {} {}-bit, {}-bit unicodes, {}-bit ints".format(
@@ -142,14 +175,17 @@ def enable_unicode_mode():
 # Recognized wildcard (e.g. %d, %a) types mapped to their associated sets
 # of characters; used in expand_wildcards_generator()
 # warning: these can't be the key for a wildcard set: digits 'i' 'b' '[' ',' ';' '-' '<' '>'
-def init_wildcards():
+def init_wildcards(wildcard_custom_list_e = None,
+                   wildcard_custom_list_f = None,
+                   wildcard_custom_list_j = None,
+                   wildcard_custom_list_k = None):
     global wildcard_sets, wildcard_keys, wildcard_nocase_sets, wildcard_re, \
            custom_wildcard_cache, backreference_maps, backreference_maps_sha1
     # N.B. that tstr() will not convert string.*case to Unicode correctly if the locale has
     # been set to one with a single-byte code page e.g. ISO-8859-1 (Latin1) or Windows-1252
     wildcard_sets = {
-        tstr("h") : tstr(string.hexdigits),
-        tstr("*") : tstr("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"),
+        tstr("H") : tstr(string.hexdigits),
+        tstr("B") : tstr("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"),
         tstr("d") : tstr(string.digits),
         tstr("a") : tstr(string.ascii_lowercase),
         tstr("A") : tstr(string.ascii_uppercase),
@@ -167,10 +203,16 @@ def init_wildcards():
         tstr("Y") : tstr(string.digits + string.punctuation),
         tstr("p") : tstr().join(map(tchr, range(33, 127))),  # all ASCII printable characters except whitespace
         tstr("P") : tstr().join(map(tchr, range(33, 127))) + tstr(" \r\n\t"),  # as above, plus space, newline, and tab
+        tstr("q") : tstr().join(map(tchr, range(33, 127))) + tstr(" "),  # all ASCII printable characters plus whitespace (All characters that are easily available for a Trezor Passphrase via keyboard or touchscreen entry)
+        tstr("U"): ''.join(chr(i) for i in range(65536)),  # All possible 16 bit unicode characters
+        tstr("e"): load_customTokenWildcard(wildcard_custom_list_e), # %e and %f are special types of wildcards which can both be customised AND can occur multiple times, but always have the same value. (And can also include other types of wildcards)
+        tstr("f"): load_customTokenWildcard(wildcard_custom_list_f),
+        tstr("j"): load_customTokenWildcard(wildcard_custom_list_j), # %j and %k behave mostly like standard wildcards but can be entire words/strings and are loaded from a custom file
+        tstr("k"): load_customTokenWildcard(wildcard_custom_list_k),
         # wildcards can be used to escape these special symbols
         tstr("%") : tstr("%"),
         tstr("^") : tstr("^"),
-        tstr("S") : tstr("$")  # the key is intentionally a capital "S", the value is a dollar sign
+        tstr("S") : tstr("$"),  # the key is intentionally a capital "S", the value is a dollar sign
     }
     wildcard_keys = tstr().join(wildcard_sets)
     #
@@ -293,7 +335,7 @@ def load_wallet(wallet_filename):
     for wallet_type in uncertain_wallet_types:
         try:
             return wallet_type.load_from_filename(wallet_filename)
-        except ValueError as e:
+        except Exception as e:
             uncertain_errors.append(wallet_type.__name__ + ": " + str(e))
 
     error_exit("unrecognized wallet format" +
@@ -389,8 +431,14 @@ class WalletBitcoinCore(object):
 
     @staticmethod
     def is_wallet_file(wallet_file):
+        # Check if it's a legacy (Berkeley DB)
         wallet_file.seek(12)
-        return wallet_file.read(8) == b"\x62\x31\x05\x00\x09\x00\x00\x00"  # BDB magic, Btree v9
+        if wallet_file.read(8) == b"\x62\x31\x05\x00\x09\x00\x00\x00":  # BDB magic, Btree v9
+            return True
+
+        wallet_file.seek(0)
+        # returns "maybe yes" or "definitely no" (Bither and Msigna wallets are also SQLite 3)
+        return None if wallet_file.read(16) == b"SQLite format 3\0" else False
 
     def __init__(self, loading = False):
         assert loading, 'use load_from_* to create a ' + self.__class__.__name__
@@ -404,67 +452,90 @@ class WalletBitcoinCore(object):
     # Load a Bitcoin Core BDB wallet file given the filename and extract part of the first encrypted master key
     @classmethod
     def load_from_filename(cls, wallet_filename, force_purepython = False):
-        if not force_purepython:
+        mkey = None
+
+        try:
+            if not force_purepython:
+                try:
+                    import bsddb3.db
+                except ImportError:
+                    force_purepython = True
+
+            if not force_purepython:
+                db_env = bsddb3.db.DBEnv()
+                wallet_filename = os.path.abspath(wallet_filename)
+                try:
+                    db_env.open(os.path.dirname(wallet_filename), bsddb3.db.DB_CREATE | bsddb3.db.DB_INIT_MPOOL)
+                    db = bsddb3.db.DB(db_env)
+                    db.open(wallet_filename, "main", bsddb3.db.DB_BTREE, bsddb3.db.DB_RDONLY)
+                except UnicodeEncodeError:
+                    error_exit("the entire path and filename of Bitcoin Core wallets must be entirely ASCII")
+
+                mkey = db.get(b"\x04mkey\x01\x00\x00\x00")
+                db.close()
+                db_env.close()
+
+            else:
+                def align_32bits(i):  # if not already at one, return the next 32-bit boundry
+                    m = i % 4
+                    return i if m == 0 else i + 4 - m
+
+                with open(wallet_filename, "rb") as wallet_file:
+                    wallet_file.seek(12)
+                    assert wallet_file.read(8) == b"\x62\x31\x05\x00\x09\x00\x00\x00", "is a Btree v9 file"
+
+                    # Don't actually try walking the btree, just look through every btree leaf page
+                    # for the value/key pair (yes they are in that order...) we're searching for
+                    wallet_file.seek(20)
+                    page_size        = struct.unpack(b"<I", wallet_file.read(4))[0]
+                    wallet_file_size = os.path.getsize(wallet_filename)
+                    for page_base in range(page_size, wallet_file_size, page_size):  # skip the header page
+                        wallet_file.seek(page_base + 20)
+                        (item_count, first_item_pos, btree_level, page_type) = struct.unpack(b"< H H B B", wallet_file.read(6))
+                        if page_type != 5 or btree_level != 1:
+                            continue  # skip non-btree and non-leaf pages
+                        pos = align_32bits(page_base + first_item_pos)  # position of the first item
+                        wallet_file.seek(pos)
+                        for i in range(item_count):    # for each item in the current page
+                            (item_len, item_type) = struct.unpack(b"< H B", wallet_file.read(3))
+                            if item_type & ~0x80 == 1:  # if it's a variable-length key or value
+                                if item_type == 1:      # if it's not marked as deleted
+                                    if i % 2 == 0:      # if it's a value, save it's position
+                                        value_pos = pos + 3
+                                        value_len = item_len
+                                    # else it's a key, check if it's the key we're looking for
+                                    elif item_len == 9 and wallet_file.read(item_len) == b"\x04mkey\x01\x00\x00\x00":
+                                        wallet_file.seek(value_pos)
+                                        mkey = wallet_file.read(value_len)  # found it!
+                                        break
+                                pos = align_32bits(pos + 3 + item_len)  # calc the position of the next item
+                            else:
+                                pos += 12  # the two other item types have a fixed length
+                            if i + 1 < item_count:  # don't need to seek if this is the last item in the page
+                                assert pos < page_base + page_size, "next item is located in current page"
+                                wallet_file.seek(pos)
+                        else: continue  # if not found on this page, continue to next page
+                        break           # if we broke out of inner loop, break out of this one too
+
+        except Exception:
+            pass
+
+
+        # If we still haven't got a valid mkey, try it as SQLite
+        if not mkey:
+            #It may be a more modern wallet file
+            import sqlite3
+            wallet_conn = sqlite3.connect(wallet_filename)
             try:
-                import bsddb3.db
-            except ImportError:
-                force_purepython = True
-
-        if not force_purepython:
-            db_env = bsddb3.db.DBEnv()
-            wallet_filename = os.path.abspath(wallet_filename)
-            try:
-                db_env.open(os.path.dirname(wallet_filename), bsddb3.db.DB_CREATE | bsddb3.db.DB_INIT_MPOOL)
-                db = bsddb3.db.DB(db_env)
-                db.open(wallet_filename, "main", bsddb3.db.DB_BTREE, bsddb3.db.DB_RDONLY)
-            except UnicodeEncodeError:
-                error_exit("the entire path and filename of Bitcoin Core wallets must be entirely ASCII")
-            mkey = db.get(b"\x04mkey\x01\x00\x00\x00")
-            db.close()
-            db_env.close()
-
-        else:
-            def align_32bits(i):  # if not already at one, return the next 32-bit boundry
-                m = i % 4
-                return i if m == 0 else i + 4 - m
-
-            with open(wallet_filename, "rb") as wallet_file:
-                wallet_file.seek(12)
-                assert wallet_file.read(8) == b"\x62\x31\x05\x00\x09\x00\x00\x00", "is a Btree v9 file"
-                mkey = None
-
-                # Don't actually try walking the btree, just look through every btree leaf page
-                # for the value/key pair (yes they are in that order...) we're searching for
-                wallet_file.seek(20)
-                page_size        = struct.unpack(b"<I", wallet_file.read(4))[0]
-                wallet_file_size = os.path.getsize(wallet_filename)
-                for page_base in range(page_size, wallet_file_size, page_size):  # skip the header page
-                    wallet_file.seek(page_base + 20)
-                    (item_count, first_item_pos, btree_level, page_type) = struct.unpack(b"< H H B B", wallet_file.read(6))
-                    if page_type != 5 or btree_level != 1:
-                        continue  # skip non-btree and non-leaf pages
-                    pos = align_32bits(page_base + first_item_pos)  # position of the first item
-                    wallet_file.seek(pos)
-                    for i in range(item_count):    # for each item in the current page
-                        (item_len, item_type) = struct.unpack(b"< H B", wallet_file.read(3))
-                        if item_type & ~0x80 == 1:  # if it's a variable-length key or value
-                            if item_type == 1:      # if it's not marked as deleted
-                                if i % 2 == 0:      # if it's a value, save it's position
-                                    value_pos = pos + 3
-                                    value_len = item_len
-                                # else it's a key, check if it's the key we're looking for
-                                elif item_len == 9 and wallet_file.read(item_len) == b"\x04mkey\x01\x00\x00\x00":
-                                    wallet_file.seek(value_pos)
-                                    mkey = wallet_file.read(value_len)  # found it!
-                                    break
-                            pos = align_32bits(pos + 3 + item_len)  # calc the position of the next item
-                        else:
-                            pos += 12  # the two other item types have a fixed length
-                        if i + 1 < item_count:  # don't need to seek if this is the last item in the page
-                            assert pos < page_base + page_size, "next item is located in current page"
-                            wallet_file.seek(pos)
-                    else: continue  # if not found on this page, continue to next page
-                    break           # if we broke out of inner loop, break out of this one too
+                for key, value in wallet_conn.execute('SELECT * FROM main'):
+                    if b"\x04mkey\x01\x00\x00\x00" in key:
+                        mkey = value
+            except sqlite3.OperationalError as e:
+                if str(e).startswith("no such table"):
+                    raise ValueError("Not an Bitcoin Core wallet: " + str(e))  # it might be a Bither or Msigna Core wallet
+                else:
+                    raise  # unexpected error
+            wallet_conn.close()
 
         if not mkey:
             if force_purepython:
@@ -748,6 +819,7 @@ class WalletPywallet(WalletBitcoinCore):
 @register_wallet_class
 class WalletMultiBit(object):
     opencl_algo = -1
+    _dump_privkeys_file = None
 
     def data_extract_id():
         return "mb"
@@ -772,6 +844,34 @@ class WalletMultiBit(object):
         load_aes256_library(warnings=False)
         self.__dict__ = state
 
+    # This just dumps the wallet private keys for Android Wallets
+    def dump_privkeys(self, wallet_data):
+        with open(self._dump_privkeys_file, 'a') as logfile:
+            from . import bitcoinj_pb2
+            global pylibscrypt
+            import lib.pylibscrypt as pylibscrypt
+            pad_len = wallet_data[-1]
+            if isinstance(pad_len, str):
+                pad_len = ord(pad_len)
+
+            # Attempt to dump the menemonic from the wallet (standard BitcoinJ file)
+            pbdata = wallet_data[:-pad_len]
+            pb_wallet = bitcoinj_pb2.Wallet()
+            pb_wallet.ParseFromString(pbdata)
+            mnemonic = WalletBitcoinj.extract_mnemonic(pb_wallet)
+            logfile.write("Android Wallet Mnemonic: '" + mnemonic.decode() + "' derivation path: m/0'")
+
+    # This just dumps the wallet private keys for Multibit Classic, Multidoge Wallets
+    def dump_privkeys_keybackup(self, key1, key2, iv):
+        with open(self._dump_privkeys_file, 'a') as logfile:
+            decrypted_wallet = aes256_cbc_decrypt(key1 + key2, iv, self._encrypted_wallet).decode().splitlines()
+            for line in decrypted_wallet:
+                try:
+                    key, date = line.split(" ")
+                    logfile.write(key + "\n")
+                except:
+                    pass
+
     def passwords_per_seconds(self, seconds):
         return max(int(round(self._passwords_per_second * seconds)), 1)
 
@@ -781,13 +881,15 @@ class WalletMultiBit(object):
         with open(privkey_filename) as privkey_file:
             # Multibit privkey files contain base64 text split into multiple lines;
             # we need the first 48 bytes after decoding, which translates to 64 before.
-            data = "".join(privkey_file.read(70).split())  # join multiple lines into one
+            data = "".join(privkey_file.read().split())  # join multiple lines into one
+
         if len(data) < 64: raise EOFError("Expected at least 64 bytes of text in the MultiBit private key file")
-        data = base64.b64decode(data[:64])
+        data = base64.b64decode(data)
         assert data.startswith(b"Salted__"), "WalletBitcoinCore.load_from_filename: file starts with base64 'Salted__'"
         if len(data) < 48:  raise EOFError("Expected at least 48 bytes of decoded data in the MultiBit private key file")
         self = cls(loading=True)
         self._encrypted_block = data[16:48]  # the first two 16-byte AES blocks
+        self._encrypted_wallet = data[16:]
         self._salt            = data[8:16]
         return self
 
@@ -845,9 +947,13 @@ class WalletMultiBit(object):
                                     break  # not base58
                             # If the loop above doesn't break, it's base58; we've found it
                             else:
+                                if self._dump_privkeys_file:
+                                    self.dump_privkeys_keybackup(key1, key2, iv)
                                 return orig_passwords[count-1], count
                         else:
                             # (when no second block is available, there's a 1 in 300 billion false positive rate here)
+                            if self._dump_privkeys_file:
+                                self.dump_privkeys_keybackup(key1, key2, iv)
                             return orig_passwords[count - 1], count
                 #
                 # Does it look like a bitcoinj protobuf (newest Bitcoin for Android backup)
@@ -858,6 +964,15 @@ class WalletMultiBit(object):
                             break
                     # If the loop above doesn't break, it looks like a domain name; we've found it
                     else:
+                        print("Notice: Found Bitcoin for Android Wallet Password")
+                        if self._dump_privkeys_file:
+                            #try:
+                            if True:
+                                wallet_data = l_aes256_cbc_decrypt(key1 + key2, iv, self._encrypted_wallet)
+                                self.dump_privkeys(wallet_data)
+                            #except:
+                            #    print("Unable to decode wallet mnemonic (common for very old wallets)")
+
                         return orig_passwords[count - 1], count
                 #
                 #  Does it look like a KnC for Android key backup?
@@ -878,6 +993,7 @@ EncryptionParams = collections.namedtuple("EncryptionParams", "salt n r p")
 @register_wallet_class
 class WalletBitcoinj(object):
     opencl_algo = -1
+    _dump_privkeys_file = None
 
     def data_extract_id():
         return "bj"
@@ -901,6 +1017,43 @@ class WalletBitcoinj(object):
                 if c and c in b"\x12\x1a":   # field number 2 or 3 of type length-delimited
                     return True
         return False
+
+    # From https://github.com/gurnec/decrypt_bitcoinj_seed
+    @staticmethod
+    def extract_mnemonic(pb_wallet, password = None):
+        from . import bitcoinj_pb2
+        """extract and if necessary decrypt (w/scrypt) a BIP39 mnemonic from a bitcoinj wallet protobuf
+
+        :param pb_wallet: a Wallet protobuf message
+        :type pb_wallet: wallet_pb2.Wallet
+        :param get_password_fn: a callback returning a password that's called iff one is required
+        :type get_password_fn: function
+        :return: the first BIP39 mnemonic found in the wallet or None if no password was entered when required
+        :rtype: str
+        """
+        for key in pb_wallet.key:
+            if key.type == bitcoinj_pb2.Key.DETERMINISTIC_MNEMONIC:
+
+                if key.HasField('secret_bytes'):  # if not encrypted
+                    return key.secret_bytes
+
+                elif key.HasField('encrypted_data'):  # if encrypted (w/scrypt)
+                    # Derive the encryption key
+                    aes_key = pylibscrypt.scrypt(
+                        password,
+                        pb_wallet.encryption_parameters.salt,
+                        pb_wallet.encryption_parameters.n,
+                        pb_wallet.encryption_parameters.r,
+                        pb_wallet.encryption_parameters.p,
+                        32)
+
+                    # Decrypt the mnemonic
+                    ciphertext = key.encrypted_data.encrypted_private_key
+                    iv = key.encrypted_data.initialisation_vector
+                    return aes256_cbc_decrypt(aes_key, iv, ciphertext).decode().replace("\\t", "")
+
+        else:  # if the loop exists normally, no mnemonic was found
+            raise ValueError('no BIP39 mnemonic found')
 
     def __init__(self, loading = False):
         assert loading, 'use load_from_* to create a ' + self.__class__.__name__
@@ -938,7 +1091,14 @@ class WalletBitcoinj(object):
 
         pb_wallet = bitcoinj_pb2.Wallet()
         pb_wallet.ParseFromString(filedata)
+
         if pb_wallet.encryption_type == bitcoinj_pb2.Wallet.UNENCRYPTED:
+            print("\nWallet Not Encrypted, Contains the following Private Keys")
+            for key in pb_wallet.key:
+                from lib.cashaddress import base58
+                privkey_wif = base58.b58encode_check(bytes([0x80]) + key.secret_bytes + bytes([0x1]))
+                print(privkey_wif)
+                print()
             raise ValueError("bitcoinj wallet is not encrypted")
         if pb_wallet.encryption_type != bitcoinj_pb2.Wallet.ENCRYPTED_SCRYPT_AES:
             raise NotImplementedError("Unsupported bitcoinj encryption type "+str(pb_wallet.encryption_type))
@@ -956,6 +1116,7 @@ class WalletBitcoinj(object):
                     self._scrypt_n    = pb_wallet.encryption_parameters.n
                     self._scrypt_r    = pb_wallet.encryption_parameters.r
                     self._scrypt_p    = pb_wallet.encryption_parameters.p
+                    self.pb_wallet_filedata = filedata
                     return self
                 print("Warning: ignoring encrypted key of unexpected length ("+str(encrypted_len)+")", file=sys.stderr)
 
@@ -974,6 +1135,19 @@ class WalletBitcoinj(object):
 
     def difficulty_info(self):
         return "scrypt N, r, p = {}, {}, {}".format(self._scrypt_n, self._scrypt_r, self._scrypt_p)
+
+    def dump_privkeys(self, derived_key):
+        from . import bitcoinj_pb2
+        pb_wallet = bitcoinj_pb2.Wallet()
+        pb_wallet.ParseFromString(self.pb_wallet_filedata)
+        
+        from lib.cashaddress import base58
+        with open(self._dump_privkeys_file, 'a') as logfile:
+            for key in pb_wallet.key:
+                privkey = aes256_cbc_decrypt(derived_key, key.encrypted_data.initialisation_vector,
+                                               key.encrypted_data.encrypted_private_key)[:32]
+                privkey_wif = base58.b58encode_check(bytes([0x80]) + privkey + bytes([0x1]))
+                logfile.write(privkey_wif + "\n")
 
     # This is the time-consuming function executed by worker thread(s). It returns a tuple: if a password
     # is correct return it, else return False for item 0; return a count of passwords checked for item 1
@@ -997,6 +1171,9 @@ class WalletBitcoinj(object):
             # If the last block (bytes 16-31) of part_encrypted_key is all padding, we've found it
             if part_key == b"\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10":
                 password = password.decode("utf_16_be", "replace")
+                if self._dump_privkeys_file:
+                    self.dump_privkeys(derived_key)
+
                 return password, count
 
         return False, count
@@ -1068,7 +1245,6 @@ class WalletCoinomi(WalletBitcoinj):
 
         pb_wallet = coinomi_pb2.Wallet()
         pb_wallet.ParseFromString(filedata)
-        #print(pb_wallet)
         if pb_wallet.encryption_type == coinomi_pb2.Wallet.UNENCRYPTED:
             raise ValueError("Coinomi wallet is not encrypted")
         if pb_wallet.encryption_type != coinomi_pb2.Wallet.ENCRYPTED_SCRYPT_AES:
@@ -1156,44 +1332,8 @@ class WalletMultiBitHD(WalletBitcoinj):
             from . import bitcoinj_pb2
             pb_wallet = bitcoinj_pb2.Wallet()
             pb_wallet.ParseFromString(decrypted_data[:-padding_len])
-            mnemonic = self.extract_mnemonic(pb_wallet, password)
+            mnemonic = WalletBitcoinj.extract_mnemonic(pb_wallet, password)
             logfile.write("BIP39 Seed: " + mnemonic)
-
-    # From https://github.com/gurnec/decrypt_bitcoinj_seed
-    def extract_mnemonic(self, pb_wallet, password):
-        from . import bitcoinj_pb2
-        """extract and if necessary decrypt (w/scrypt) a BIP39 mnemonic from a bitcoinj wallet protobuf
-
-        :param pb_wallet: a Wallet protobuf message
-        :type pb_wallet: wallet_pb2.Wallet
-        :param get_password_fn: a callback returning a password that's called iff one is required
-        :type get_password_fn: function
-        :return: the first BIP39 mnemonic found in the wallet or None if no password was entered when required
-        :rtype: str
-        """
-        for key in pb_wallet.key:
-            if key.type == bitcoinj_pb2.Key.DETERMINISTIC_MNEMONIC:
-
-                if key.HasField('secret_bytes'):  # if not encrypted
-                    return key.secret_bytes
-
-                elif key.HasField('encrypted_data'):  # if encrypted (w/scrypt)
-                    # Derive the encryption key
-                    aes_key = pylibscrypt.scrypt(
-                        password,
-                        pb_wallet.encryption_parameters.salt,
-                        pb_wallet.encryption_parameters.n,
-                        pb_wallet.encryption_parameters.r,
-                        pb_wallet.encryption_parameters.p,
-                        32)
-
-                    # Decrypt the mnemonic
-                    ciphertext = key.encrypted_data.encrypted_private_key
-                    iv = key.encrypted_data.initialisation_vector
-                    return aes256_cbc_decrypt(aes_key, iv, ciphertext).decode().replace("\\t", "")
-
-        else:  # if the loop exists normally, no mnemonic was found
-            raise ValueError('no BIP39 mnemonic found')
 
     @staticmethod
     def is_wallet_file(wallet_file): return None  # there's no easy way to check this
@@ -1368,7 +1508,7 @@ class WalletMsigna(object):
                 wallet_cur = wallet_conn.execute(select)
         except sqlite3.OperationalError as e:
             if str(e).startswith("no such table"):
-                raise ValueError("Not an mSIGNA wallet: " + str(e))  # it might be a Bither wallet
+                raise ValueError("Not an mSIGNA wallet: " + str(e))  # it might be a Bither or Bitcoin Core wallet
             else:
                 raise# unexpected error
         keychain = wallet_cur.fetchone()
@@ -1675,7 +1815,7 @@ class WalletElectrum2(WalletElectrum):
             key  = l_sha256( l_sha256( password ).digest() ).digest()
             xprv = l_aes256_cbc_decrypt(key, iv, part_encrypted_xprv)
 
-            if xprv.startswith(b"xprv"):  # BIP32 extended private key version bytes
+            if xprv.startswith(b"xprv") or xprv.startswith(b"zprv"):  # BIP32 extended private key version bytes
                 for c in xprv[4:]:
                     # If it's outside of the base58 set [1-9A-HJ-NP-Za-km-z]
                     if c > ord("z") or c < ord("1") or ord("9") < c < ord("A") or ord("Z") < c < ord("a") or chr(c) in "IOl": break  # not base58
@@ -1861,6 +2001,9 @@ class WalletElectrum28(object):
 @register_wallet_class
 class WalletBlockchain(object):
 
+    #Some of these strings are concatenated to 10 chars, as a the full string may not fit in the single decrypted block
+    matchStrings = b"\"guid\"|\"sharedKey\"|\"double_enc|\"dpasswordh|\"metadataHD|\"options\"|\"address_bo|\"tx_notes\"|\"tx_names\"|\"keys\"|\"hd_wallets|\"paidTo\""
+
     opencl_algo = -1
 
     _savepossiblematches = True
@@ -1886,8 +2029,7 @@ class WalletBlockchain(object):
         # A bit fragile because it assumes the guid is in the first encrypted block,
         # although this has always been the case as of 6/2014 (since 12/2011)
         # As of May 2020, guid no longer appears in the first block, but tx_notes appears there instead
-        return decrypted[:-padding] if 1 <= padding <= 16 and re.search(
-            b"\"guid\"|\"tx_notes\"|\"address_book|\"double", decrypted) else None
+        return decrypted[:-padding] if 1 <= padding <= 16 and re.search(self.matchStrings, decrypted) else None
 
     #
     # Encryption scheme only used in version 0.0 wallets (N.B. this is untested)
@@ -1899,7 +2041,7 @@ class WalletBlockchain(object):
         padding = 17 - len(last_block)  # ISO 7816-4 padding length
         return decrypted[:-padding] if 1 <= padding <= 16 and \
                                        decrypted[-padding] == b"\x80" and \
-                                       re.match('{\s*"guid"',decrypted.decode()) else None
+                                       re.match(self.matchStrings,decrypted.decode()) else None
 
     def decrypt_wallet(self,password):
         from lib.cashaddress import base58
@@ -2051,8 +2193,9 @@ class WalletBlockchain(object):
             raise ValueError("Can't base64-decode Blockchain wallet: "+str(e))
         if len(data) < 32:
             raise ValueError("Encrypted Blockchain data is too short")
-        if len(data) % 16 != 0:
-            raise ValueError("Encrypted Blockchain data length is not divisible by the encryption blocksize (16)")
+        #Used to check if the length of the decrypted data was divisible by 16, but this wasn't actually true for all v0 wallets
+        #if len(data) % 16 != 0:
+        #    raise ValueError("Encrypted Blockchain data length is not divisible by the encryption blocksize (16)")
 
         # If this is (possibly) a v0.0 (a.k.a. v1) wallet file, check that the encrypted data
         # looks random, otherwise this could be some other type of base64-encoded file such
@@ -2060,9 +2203,9 @@ class WalletBlockchain(object):
         if not iter_count:  # if this is a v0.0 wallet
             # The likelihood of of finding a valid encrypted blockchain wallet (even at its minimum length
             # of about 500 bytes) with less than 7.4 bits of entropy per byte is less than 1 in 10^6
-            # (decreased test below to 7.2 after being shown a wallet with just under 7.4 entropy bits)
+            # (decreased test below to 7.0 after being shown a wallet with 7.0 entropy bits)
             entropy_bits = est_entropy_bits(data)
-            if entropy_bits < 7.2:
+            if entropy_bits < 7.0:
                 raise ValueError("Doesn't look random enough to be an encrypted Blockchain wallet (only {:.1f} bits of entropy per byte)".format(entropy_bits))
 
         return data, iter_count  # iter_count == 0 for v0 wallets
@@ -2115,44 +2258,42 @@ class WalletBlockchain(object):
     # (see https://github.com/gurnec/btcrecover/issues/ that start with "double_encryption"
     # as per this issue here: https://github.com/3rdIteration/btcrecover/issues/96
     def check_blockchain_decrypted_block(self, unencrypted_block, password):
-        if unencrypted_block[0] == ord("{"):
+        # Return True if
+        if re.search(self.matchStrings, unencrypted_block):
+            if self._savepossiblematches:
+                try:
+                    return True  # Only return true if we can successfully decode the block in to ascii
+
+                except UnicodeDecodeError:  # Likely a false positive if we can't...
+                    with open('possible_passwords.log', 'a', encoding="utf_8") as logfile:
+                        logfile.write(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") +
+                                      " Found Likely False Positive Password (with non-Ascii characters in decrypted block) ==>" +
+                                      password.decode("utf_8") +
+                                      "<== in Decrypted Block ==>" +
+                                      unencrypted_block.decode("utf-8", "ignore") +
+                                      "<==\n")
+                        print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                              "**NOTICE** Possible (Unlikely) Match Found, recorded in possible_passwords.log")
+
+        elif unencrypted_block[0] == ord("{"):
             if b'"' in unencrypted_block[:4]: # If it really is a json wallet fragment, there will be a double quote in there within the first few characters...
                 try:
                     # Try to decode the decrypted block to ascii, this will pretty much always fail on anything other
                     # than the correct password
                     unencrypted_block.decode("ascii")
                     if self._savepossiblematches:
-                        with open(self._possible_passwords_file, 'a') as logfile:
+                        with open(self._possible_passwords_file, 'a', encoding="utf_8") as logfile:
                             logfile.write(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") +
                                           " Possible Password ==>" +
                                           password.decode("utf_8") +
                                           "<== in Decrypted Block ==>" +
                                           unencrypted_block.decode("ascii") +
                                           "<==\n")
+                            print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                  "**NOTICE** Possible (Unlikely) Match Found, recorded in possible_passwords.log")
                 except UnicodeDecodeError:
                     pass
 
-            # Return True if
-            if re.search(b"\"guid\"|\"tx_notes\"|\"address_book|\"double", unencrypted_block):
-                if self._savepossiblematches:
-                    try:
-                        with open('possible_passwords.log', 'a') as logfile:
-                            logfile.write(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") +
-                                          " Found Password ==>" +
-                                          password.decode("utf_8") +
-                                          "<== in Decrypted Block ==>" +
-                                          unencrypted_block.decode("ascii") +
-                                          "<==\n")
-                            return True # Only return true if we can successfully decode the block in to ascii
-
-                    except UnicodeDecodeError: # Likely a false positive if we can't...
-                        with open('possible_passwords.log', 'a') as logfile:
-                            logfile.write(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") +
-                                          " Found Likely False Positive Password (with non-Ascii characters in decrypted block) ==>" +
-                                          password.decode("utf_8") +
-                                          "<== in Decrypted Block ==>" +
-                                          unencrypted_block.decode("utf-8", "ignore") +
-                                          "<==\n")
                             
 
         return False
@@ -2289,6 +2430,16 @@ class WalletBlockchainSecondpass(WalletBlockchain):
             key['privkey_compressed'] = base58.b58encode_check(bytes([0x80]) + privkey + bytes([0x1]))
             key['privkey_uncompressed'] = base58.b58encode_check(bytes([0x80]) + privkey)
 
+        # Older wallets don't have any hd_wallets at all, so handle this gracefully
+        try:
+            for hd_wallets in self._wallet_json['hd_wallets']:
+                for accounts in hd_wallets['accounts']:
+                    accounts['xpriv_decrypted'] = self.decrypt_secondpass_privkey(accounts["xpriv"],
+                                                              self._wallet_json['sharedKey'].encode('ascii') + password,
+                                                              iter_count, legacy_decrypt).decode()
+        except:
+            pass
+
         if self._dump_wallet_file:
             self.dump_wallet()
 
@@ -2310,6 +2461,13 @@ class WalletBlockchainSecondpass(WalletBlockchain):
                 # compressed or uncompressed keys, so produce both...
                 logfile.write(key['privkey_compressed'] + "\n")
                 logfile.write(key['privkey_uncompressed'] + "\n")
+
+            try:
+                for hd_wallets in self._wallet_json['hd_wallets']:
+                    for accounts in hd_wallets['accounts']:
+                        logfile.write(accounts['xpriv_decrypted']+ "\n")
+            except:
+                pass
 
 
     @staticmethod
@@ -2404,7 +2562,7 @@ class WalletBlockchainSecondpass(WalletBlockchain):
 
     # This is the time-consuming function executed by worker thread(s). It returns a tuple: if a password
     # is correct return it, else return False for item 0; return a count of passwords checked for item 1
-    def _return_verified_password_or_false_cpu(self, passwords): # Blockchain.com Secondpassword
+    def _return_verified_password_or_false_cpu(self, arg_passwords): # Blockchain.com Secondpassword
         # Copy vars into locals for a small speed boost
         l_sha256 = hashlib.sha256
         password_hash = self._password_hash
@@ -2412,11 +2570,12 @@ class WalletBlockchainSecondpass(WalletBlockchain):
         iter_count    = self._iter_count
 
         # Convert Unicode strings (lazily) to UTF-8 bytestrings
-        passwords = map(lambda p: p.encode("utf_8", "ignore"), passwords)
+        passwords = map(lambda p: p.encode("utf_8", "ignore"), arg_passwords)
 
-        # Newer wallets specify an iter_count and use something similar to PBKDF1 with SHA-256
-        if iter_count:
-            for count, password in enumerate(passwords, 1):
+        for count, password in enumerate(passwords, 1):
+
+            # Newer wallets specify an iter_count and use something similar to PBKDF1 with SHA-256
+            if iter_count:
                 if isinstance(salt,str): running_hash = salt.encode() + password
                 if isinstance(salt,bytes): running_hash = salt + password
                 for i in range(iter_count):
@@ -2427,31 +2586,30 @@ class WalletBlockchainSecondpass(WalletBlockchain):
                     self.decrypt_wallet(password, iter_count)
                     return password.decode("utf_8", "replace"), count
 
-        # Older wallets used one of three password hashing schemes
-        else:
-            for count, password in enumerate(passwords, 1):
-                if isinstance(salt,str): running_hash = l_sha256(salt.encode() + password).digest()
-                if isinstance(salt, bytes): running_hash = l_sha256(salt + password).digest()
-                # Just a single SHA-256 hash
-                if running_hash == password_hash:
-                    #print("Debug: Matched Second pass (Single Hash)")
-                    # Decrypt wallet and dump if required
-                    self.decrypt_wallet(password, 1)
-                    return password.decode("utf_8", "replace"), count
-                # Exactly 10 hashes (the first of which was done above)
-                for i in range(9):
-                    running_hash = l_sha256(running_hash).digest()
-                if running_hash == password_hash:
-                    #print("Debug: Matched Second pass (Exactly 10 hashes)")
-                    # Decrypt wallet and dump if required
-                    self.decrypt_wallet(password, 10)
-                    return password.decode("utf_8", "replace"), count
-                # A single unsalted hash
-                if l_sha256(password).digest() == password_hash:
-                    #print("Debug: Matched Second pass (Single Unsalted Hash)")
-                    # Decrypt wallet and dump if required
-                    self.decrypt_wallet(password, 1, True)
-                    return password.decode("utf_8", "replace"), count
+            # Older wallets used one of three password hashing schemes
+            # 2022-03 Update - It also seems that some newer (v3) wallets use these older hashing schemes too...
+            if isinstance(salt,str): running_hash = l_sha256(salt.encode() + password).digest()
+            if isinstance(salt, bytes): running_hash = l_sha256(salt + password).digest()
+            # Just a single SHA-256 hash
+            if running_hash == password_hash:
+                #print("Debug: Matched Second pass (Single Hash)")
+                # Decrypt wallet and dump if required
+                self.decrypt_wallet(password, 1)
+                return password.decode("utf_8", "replace"), count
+            # Exactly 10 hashes (the first of which was done above)
+            for i in range(9):
+                running_hash = l_sha256(running_hash).digest()
+            if running_hash == password_hash:
+                #print("Debug: Matched Second pass (Exactly 10 hashes)")
+                # Decrypt wallet and dump if required
+                self.decrypt_wallet(password, 10)
+                return password.decode("utf_8", "replace"), count
+            # A single unsalted hash
+            if l_sha256(password).digest() == password_hash:
+                #print("Debug: Matched Second pass (Single Unsalted Hash)")
+                # Decrypt wallet and dump if required
+                self.decrypt_wallet(password, 1, True)
+                return password.decode("utf_8", "replace"), count
 
         return False, count
 
@@ -2482,12 +2640,42 @@ class WalletBlockchainSecondpass(WalletBlockchain):
             results = zip(passwords, clResult)
 
         # Newer wallets specify an iter_count and use something similar to PBKDF1 with SHA-256
-        if iter_count:
             for count, (password, derived_key) in enumerate(results, 1):
                 if derived_key == password_hash:
                     self.decrypt_wallet(password, iter_count)
-
                     return password.decode("utf_8", "replace"), count
+
+        # Older wallets used one of three password hashing schemes
+        # 2022-03 Update - It also seems that some newer (v3) wallets use these older hashing schemes too...
+        # (These older encryption schemes aren't worth running on the GPU, too few iterations)
+
+        # Convert Unicode strings (lazily) to UTF-8 bytestrings
+        passwords = map(lambda p: p.encode("utf_8", "ignore"), arg_passwords)
+
+        for count, password in enumerate(passwords, 1):
+            if isinstance(salt, str): running_hash = l_sha256(salt.encode() + password).digest()
+            if isinstance(salt, bytes): running_hash = l_sha256(salt + password).digest()
+            # Just a single SHA-256 hash
+            if running_hash == password_hash:
+                # print("Debug: Matched Second pass (Single Hash)")
+                # Decrypt wallet and dump if required
+                self.decrypt_wallet(password, 1)
+                return password.decode("utf_8", "replace"), count
+            # Exactly 10 hashes (the first of which was done above)
+            for i in range(9):
+                running_hash = l_sha256(running_hash).digest()
+            if running_hash == password_hash:
+                # print("Debug: Matched Second pass (Exactly 10 hashes)")
+                # Decrypt wallet and dump if required
+                self.decrypt_wallet(password, 10)
+                return password.decode("utf_8", "replace"), count
+            # A single unsalted hash
+            if l_sha256(password).digest() == password_hash:
+                # print("Debug: Matched Second pass (Single Unsalted Hash)")
+                # Decrypt wallet and dump if required
+                self.decrypt_wallet(password, 1, True)
+                return password.decode("utf_8", "replace"), count
+
 
         return False, count
 
@@ -2573,6 +2761,65 @@ class WalletBlockIO(object):
 
         return False, count
 
+############### Bitgo User Key ###############
+
+@register_wallet_class
+class WalletBitGo(object):
+    opencl_algo = -1
+    _savepossiblematches = False
+
+    _dump_privkeys_file = None
+    _dump_wallet_file = None
+    _using_extract = False
+
+    def __init__(self):
+        if not sjcl_available:
+            exit(
+                "\nERROR: Cannot load SJCL module which is required for BitGo wallets... You can install it with the command 'pip3 install sjcl")
+
+    @staticmethod
+    def is_wallet_file(wallet_file):
+        wallet_file.seek(0)
+        try:
+            walletdata = wallet_file.read()
+            json.loads(walletdata) # Check if it's a valid JSON
+        except: return False
+
+        return (b"adata" in walletdata and b"aes" in walletdata)
+
+    def passwords_per_seconds(self, seconds):
+        return 5
+
+    # Load a Dogechain wallet file
+    @classmethod
+    def load_from_filename(cls, wallet_filename):
+        self = cls()
+        with open(wallet_filename, "rb") as wallet_file:
+                wallet_data = wallet_file.read()
+
+        self.user_key = json.loads(wallet_data)
+
+        return self
+
+    def difficulty_info(self):
+        iter_count = self.user_key['iter']
+        hash_function = str(self.user_key['ks'])
+        return str(iter_count) + " SHA" + hash_function + " Iterations"
+
+    # This is the time-consuming function executed by worker thread(s). It returns a tuple: if a password
+    # is correct return it, else return False for item 0; return a count of passwords checked for item 1
+    def return_verified_password_or_false(self, arg_passwords):  # block.io Main Password
+
+        for count, password in enumerate(arg_passwords, 1):
+            try:
+                key = SJCL().decrypt(self.user_key, password)
+                return password, count
+
+            except ValueError:
+                pass
+
+        return False, count
+
 ############### Dogechain.info ###############
 
 @register_wallet_class
@@ -2580,6 +2827,8 @@ class WalletDogechain(object):
     opencl_algo = -1
     _savepossiblematches = True
     _possible_passwords_file = "possible_passwords.log"
+
+    matchStrings = b"\"guid\"|\"sharedKey\"|\"keys\""
 
     _dump_privkeys_file = None
     _dump_wallet_file = None
@@ -2602,7 +2851,7 @@ class WalletDogechain(object):
 
         # A bit fragile because it assumes the guid is in the first encrypted block,
         return decrypted[:-padding] if 1 <= padding <= 16 and re.search(
-            b"\"guid\"|\"sharedKey\"|\"keys\"", decrypted) else None
+            self.matchString, decrypted) else None
 
     def decrypt_wallet(self, password):
         # Can't decrypt or dump an extract in any meaninful way...
@@ -2645,7 +2894,12 @@ class WalletDogechain(object):
         try:
             walletdata = wallet_file.read()
         except: return False
-        return (b"email" in walletdata and b"two_fa_method" in walletdata)  # Dogechain.info wallets have email and 2fa fields that are fairly unique
+        isWallet = False
+        if (b"email" in walletdata and b"two_fa_method" in walletdata):  # Older Dogechain.info wallets have email and 2fa fields that are fairly unique
+            isWallet = True
+        elif (b"salt" in walletdata and b"cipher" in walletdata and b"payload" in walletdata):  # Newer Dogechain.info wallets have cipher, salt and payload fields
+            isWallet = True
+        return isWallet
 
     def __init__(self, iter_count, loading=False):
         assert loading, 'use load_from_* to create a ' + self.__class__.__name__
@@ -2674,8 +2928,24 @@ class WalletDogechain(object):
         wallet_json = json.loads(wallet_data)
         self = cls(wallet_json["pbkdf2_iterations"], loading=True)
         self.salt = base64.b64decode(wallet_json["salt"])
-        self._encrypted_wallet = base64.b64decode(wallet_json["payload"])
-        self._encrypted_block = base64.b64decode(wallet_json["payload"])[:32]
+        try:
+            self.aes_cipher = wallet_json["cipher"]
+        except:
+            self.aes_cipher = "AES-CBC"
+
+        if self.aes_cipher == "AES-CBC":
+            self.iv = base64.b64decode(wallet_json["payload"])[:16]
+            self._encrypted_wallet = base64.b64decode(wallet_json["payload"])[16:]
+        else: # AES GCM
+            self.iv = base64.b64decode(wallet_json["payload"])[:12]
+            self.aes_auth_tag = base64.b64decode(wallet_json["payload"])[12:12+16]
+            self._encrypted_wallet = base64.b64decode(wallet_json["payload"])[12+16:]
+
+        self._encrypted_block = self._encrypted_wallet[:32]
+
+        if ";" in wallet_json["payload"]:
+            exit("\n**ERROR**\nFound RSA-encrypted Dogechain wallet payload, this means it wasn't downloaded in a way that supports password recovery or decryption... You cannot decrypt this wallet and will need to download it correctly or request your encrypted wallet from dogechain)")
+
         return self
 
     @classmethod
@@ -2739,7 +3009,7 @@ class WalletDogechain(object):
                     pass
 
             # Return True if
-            if re.search(b"\"guid\"|\"sharedKey\"|\"keys\"", unencrypted_block):
+            if re.search(self.matchStrings, unencrypted_block):
                 if self._savepossiblematches:
                     try:
                         with open('possible_passwords.log', 'a') as logfile:
@@ -2780,12 +3050,21 @@ class WalletDogechain(object):
             passwordbase64 = base64.b64encode(passwordSHA256)
             key = hashlib.pbkdf2_hmac('sha256', passwordbase64, self.salt, self._iter_count, 32)
 
-            decrypted_block = AES.new(key, AES.MODE_CBC).decrypt(self._encrypted_block)[16:]
+            if self.aes_cipher == "AES-CBC":
+                decrypted_block = AES.new(key, AES.MODE_CBC, self.iv).decrypt(self._encrypted_block)
 
-            if self.check_decrypted_block(decrypted_block, password):
+                if self.check_decrypted_block(decrypted_block, password):
                     # Decrypt and dump the wallet if required
                     self.decrypt_wallet(password)
                     return password.decode("utf_8", "replace"), count
+            else:
+                try:
+                    # For AES-GCM we need to decrypt the whole wallet, not just a block,
+                    # also don't need to manually check the file contents as verification is part of the decryption
+                    decrypted_block = AES.new(key, AES.MODE_GCM, self.iv).decrypt_and_verify(self._encrypted_wallet, self.aes_auth_tag)
+                    return password.decode("utf_8", "replace"), count
+                except ValueError:
+                    continue
 
         return False, count
 
@@ -2802,11 +3081,19 @@ class WalletDogechain(object):
         results = zip(passwords, clResult)
 
         for count, (password, key) in enumerate(results, 1):
-            decrypted_block = AES.new(key, AES.MODE_CBC).decrypt(self._encrypted_block)[16:]
-            if self.check_decrypted_block(decrypted_block, password):
+            if self.aes_cipher == "AES-CBC":
+                decrypted_block = AES.new(key, AES.MODE_CBC, self.iv).decrypt(self._encrypted_block)
+                if self.check_decrypted_block(decrypted_block, password):
                     # Decrypt and dump the wallet if required
                     self.decrypt_wallet(password)
                     return password.decode("utf_8", "replace"), count
+            else:
+                try:
+                    decrypted_block = AES.new(key, AES.MODE_GCM, self.iv).decrypt_and_verify(self._encrypted_wallet,
+                                                                                             self.aes_auth_tag)
+                    return password.decode("utf_8", "replace"), count
+                except ValueError:
+                    continue
 
         return False, count
 
@@ -2821,7 +3108,10 @@ class WalletMetamask(object):
 
     _dump_privkeys_file = None
     _dump_wallet_file = None
+
     _using_extract = False
+
+    _mobileWallet = False
 
     def data_extract_id():
         return "mt"
@@ -2832,7 +3122,7 @@ class WalletMetamask(object):
         try:
             walletdata = wallet_file.read().decode("utf-8","ignore").replace("\\","")
         except: return False
-        return ("\"data\"" in walletdata and "\"iv\"" in walletdata and "\"salt\"" in walletdata)  # Metamask wallets have these three keys in the json (Other supported wallet times have one or the other, but not all three)
+        return ("\"data\"" in walletdata and "\"iv\"" in walletdata and "\"salt\"" in walletdata)  or ("\"lib\":\"original\"" in walletdata) # Metamask wallets have these three keys in the json (Other supported wallet times have one or the other, but not all three), metamask mobile has a lib:original string
 
     def __init__(self, iter_count, loading=False):
         assert loading, 'use load_from_* to create a ' + self.__class__.__name__
@@ -2869,7 +3159,7 @@ class WalletMetamask(object):
                 # For LDB files and Ronin wallet log files
                 if b"vault" in record.key or b"encryptedVault" in record.key:
                     data = record.value.decode("utf-8", "ignore").replace("\\", "")
-                    if "salt" in data:
+                    if "\"salt\"" in data:
                         if data in walletdata_list:
                             continue
 
@@ -2877,18 +3167,23 @@ class WalletMetamask(object):
 
                 if b"data" in record.key:
                     data = record.value.decode("utf-8", "ignore").replace("\\", "")
-                    if "salt" in data:
-                        walletStartText = "vault"
+                    if "\"salt\"" in data:
+                        walletStartText = "\"vault\""
 
                         wallet_data_start = data.lower().find(walletStartText)
 
                         wallet_data_trimmed = data[wallet_data_start:]
 
-                        wallet_data_start = wallet_data_trimmed.find("data")
-                        wallet_data_trimmed = wallet_data_trimmed[wallet_data_start - 2:]
+                        wallet_data_start = wallet_data_trimmed.find("\"data\"")
+                        wallet_data_trimmed = wallet_data_trimmed[wallet_data_start - 1:]
 
-                        wallet_data_end = wallet_data_trimmed.find("}")
+                        wallet_data_end = wallet_data_trimmed.find("}\"}")
                         wallet_data = wallet_data_trimmed[:wallet_data_end + 1]
+
+                        if wallet_data in walletdata_list:
+                            continue
+
+                        walletdata_list.append(wallet_data)
 
         except ValueError:
             tryLoadJSONFile = True
@@ -2906,32 +3201,65 @@ class WalletMetamask(object):
             with open(wallet_filename, "rb") as wallet_file:
                 wallet_data = wallet_file.read().decode("utf-8","ignore").replace("\\","")
 
-        wallet_json = json.loads(wallet_data)
+        try:
+            wallet_json = json.loads(wallet_data)
 
-        self = cls(10000, loading=True)
-        self.salt = base64.b64decode(wallet_json["salt"])
-        self.encrypted_vault = base64.b64decode(wallet_json["data"])
-        self.encrypted_block = base64.b64decode(wallet_json["data"])[:16]
-        self.iv = base64.b64decode(wallet_json["iv"])
+        # The JSON data might be from a Metamask mobile wallet
+        except json.decoder.JSONDecodeError:
+            walletStartText = "vault"
+            wallet_data_start = wallet_data.lower().find(walletStartText)
+            wallet_data_trimmed = wallet_data[wallet_data_start:]
+            wallet_data_start = wallet_data_trimmed.find("cipher")
+            wallet_data_trimmed = wallet_data_trimmed[wallet_data_start - 2:]
+            wallet_data_end = wallet_data_trimmed.find("}")
+            wallet_data = wallet_data_trimmed[:wallet_data_end + 1]
+            wallet_json = json.loads(wallet_data)
+
+        if "\"lib\":\"original\"" in wallet_data:
+            self = cls(5000, loading=True)
+            self.salt = wallet_json["salt"].encode()
+            self.encrypted_vault = base64.b64decode(wallet_json["cipher"])
+            self.encrypted_block = base64.b64decode(wallet_json["cipher"])[:16]
+            self.iv = binascii.unhexlify(wallet_json["iv"])
+            self._mobileWallet = True
+        elif "keyMetadata" in wallet_data:
+            hash_iterations = wallet_json["keyMetadata"]["params"]["iterations"]
+            self = cls(hash_iterations, loading=True)
+            self.salt = base64.b64decode(wallet_json["salt"])
+            self.encrypted_vault = base64.b64decode(wallet_json["data"])
+            self.encrypted_block = base64.b64decode(wallet_json["data"])[:16]
+            self.iv = base64.b64decode(wallet_json["iv"])
+        else:
+            self = cls(10000, loading=True)
+            self.salt = base64.b64decode(wallet_json["salt"])
+            self.encrypted_vault = base64.b64decode(wallet_json["data"])
+            self.encrypted_block = base64.b64decode(wallet_json["data"])[:16]
+            self.iv = base64.b64decode(wallet_json["iv"])
         return self
 
     # Import extracted Metamask vault data necessary for password checking
     @classmethod
     def load_from_data_extract(cls, file_data):
-        print(file_data)
         # These are the same first encrypted block, iv and salt count retrieved above
-        encrypted_block, iv, salt = struct.unpack(b"< 16s 16s 32s", file_data)
-
-        self = cls(10000, loading=True)
+        encrypted_block, iv, salt, isMobileWallet = struct.unpack(b"< 16s 16s 32s 1?", file_data)
+        if isMobileWallet:
+            self = cls(5000, loading=True)
+            self.salt = salt[:-8]
+        else:
+            self = cls(10000, loading=True)
+            self.salt = salt
         self.encrypted_block = encrypted_block
         self.iv = iv
-        self.salt = salt
+        self._mobileWallet = isMobileWallet
         self.encrypted_vault = ""
         self._using_extract   = True
         return self
 
     def difficulty_info(self):
-        return "10,000 PBKDF2-SHA256 iterations"
+        if not self._mobileWallet:
+            return str(self._iter_count) + " PBKDF2-SHA256 iterations"
+        else:
+            return "5,000 PBKDF2-SHA512 iterations"
 
     def init_logfile(self):
         with open(self._possible_passwords_file, 'a') as logfile:
@@ -2943,7 +3271,7 @@ class WalletMetamask(object):
         "Examples of successfully decrypted blocks will not just be random characters, "
         "some examples of what correctly decryped blocks logs look like are:\n\n"
         "Possible Password ==>btcr-test-password<== in Decrypted Block ==>[{\"type\":\"HD Key<==\n"
-        "Possible Password ==>btcr-test-password<== in Decrypted Block ==>\"{\\\"mnemonic\\\":\<==\n"
+        "Possible Password ==>btcr-test-password<== in Decrypted Block ==>\"{\\\"mnemonic\\\":<==\n"
         "Possible Password ==>BTCR-test-passw0rd<== in Decrypted Block ==>{\"version\":\"v2\",<==\n"
         "Note: The markers ==> and <== are not part of either your password or the decrypted block...\n\n"
         "If the password works and was not correctly found, or your wallet detects a false positive, please report the decrypted block data at "
@@ -3000,6 +3328,36 @@ class WalletMetamask(object):
 
         return False
 
+    def dump_wallet(self,key):
+        # If the dump wallet argument was used, just copy that path to dump-privkeys
+        if self._dump_wallet_file:
+            self._dump_privkeys_file = self._dump_wallet_file
+
+        if self._dump_privkeys_file and not self._using_extract:
+            # Decrypt vault
+            if not self._mobileWallet:
+                decrypted_vault = AES.new(key, AES.MODE_GCM, nonce=self.iv).decrypt(self.encrypted_vault).decode("utf-8", "ignore")
+            else:
+                decrypted_vault = AES.new(key, AES.MODE_CBC, self.iv).decrypt(self.encrypted_vault).decode("utf-8", "ignore")
+
+            # Parse to JSON
+            decoder = json.JSONDecoder()
+            decrypted_vault_json, extrachars = decoder.raw_decode(decrypted_vault)
+
+            try:
+                # Convert ascii list to string (Needed for some environments)
+                mnemonic = decrypted_vault_json[0]['data']['mnemonic']
+                mnemonic = ''.join(map(chr, mnemonic))
+                decrypted_vault_json[0]['data']['mnemonic'] = mnemonic
+            except TypeError:
+                pass # The conversion will fail if mnemonic is stored as a normal string
+            except KeyError:
+                pass  # The conversion will fail if there are extra items in the wallet and it's a normal string (like with Binance Chain wallet)
+
+            #Dump to file
+            with open(self._dump_privkeys_file, 'a') as logfile:
+                logfile.write(json.dumps(decrypted_vault_json))
+
     def return_verified_password_or_false(self, passwords):  # Metamask
         return self._return_verified_password_or_false_opencl(passwords) if (not isinstance(self.opencl_algo, int)) \
             else self._return_verified_password_or_false_cpu(passwords)
@@ -3011,17 +3369,17 @@ class WalletMetamask(object):
         passwords = map(lambda p: p.encode("utf_8", "ignore"), arg_passwords)
 
         for count, password in enumerate(passwords, 1):
+            if not self._mobileWallet:
+                key = hashlib.pbkdf2_hmac('sha256', password, self.salt, self._iter_count, 32)
+                decrypted_block = AES.new(key, AES.MODE_GCM, nonce=self.iv).decrypt(self.encrypted_block)
+            else:
+                key = hashlib.pbkdf2_hmac('sha512', password, self.salt, self._iter_count, 32)
+                decrypted_block = AES.new(key, AES.MODE_CBC, self.iv).decrypt(self.encrypted_block)
 
-            key = hashlib.pbkdf2_hmac('sha256', password, self.salt, self._iter_count, 32)
-
-            decrypted_block = AES.new(key, AES.MODE_GCM, nonce=self.iv).decrypt(self.encrypted_block)
 
             if self.check_decrypted_block(decrypted_block, password):
-                # This just dumps the wallet private keys
-                if self._dump_privkeys_file and not self._using_extract:
-                    decrypted_vault = AES.new(key, AES.MODE_GCM, nonce=self.iv).decrypt(self.encrypted_vault)
-                    with open(self._dump_privkeys_file, 'a') as logfile:
-                        logfile.write(decrypted_vault.decode("ascii", "ignore"))
+                # This just dumps the wallet private keys (if required)
+                self.dump_wallet(key)
 
                 return password.decode("utf_8", "replace"), count
 
@@ -3031,7 +3389,10 @@ class WalletMetamask(object):
         # Convert Unicode strings (lazily) to normalized UTF-8 bytestrings
         passwords = map(lambda p: normalize("NFKD", p).encode("utf_8", "ignore"), arg_passwords)
 
-        clResult = self.opencl_algo.cl_pbkdf2(self.opencl_context_pbkdf2_sha256, passwords, self.salt, self._iter_count, 32)
+        if not self._mobileWallet:
+            clResult = self.opencl_algo.cl_pbkdf2(self.opencl_context_pbkdf2_sha256, passwords, self.salt, self._iter_count, 32)
+        else:
+            clResult = self.opencl_algo.cl_pbkdf2(self.opencl_context_pbkdf2_sha512, passwords, self.salt, self._iter_count, 32)
 
         # This list is consumed, so recreated it and zip
         passwords = map(lambda p: normalize("NFKD", p).encode("utf_8", "ignore"), arg_passwords)
@@ -3039,13 +3400,14 @@ class WalletMetamask(object):
         results = zip(passwords, clResult)
 
         for count, (password, result) in enumerate(results, 1):
-            decrypted_block = AES.new(result, AES.MODE_GCM, nonce=self.iv).decrypt(self.encrypted_block)
+            if not self._mobileWallet:
+                decrypted_block = AES.new(result, AES.MODE_GCM, nonce=self.iv).decrypt(self.encrypted_block)
+            else:
+                decrypted_block = AES.new(result, AES.MODE_CBC, self.iv).decrypt(self.encrypted_block)
+
             if self.check_decrypted_block(decrypted_block, password):
                 # This just dumps the wallet private keys
-                if self._dump_privkeys_file and not self._using_extract:
-                    decrypted_vault = AES.new(key, AES.MODE_GCM, nonce=self.iv).decrypt(self.encrypted_vault)
-                    with open(self._dump_privkeys_file, 'a') as logfile:
-                        logfile.write(decrypted_vault.decode("ascii", "ignore"))
+                self.dump_wallet(result)
 
                 return password.decode("utf_8", "replace"), count
 
@@ -3074,6 +3436,9 @@ class WalletBither(object):
             return False
 
     def __init__(self, loading = False):
+        if not hashlib_ripemd160_available:
+            print("Warning: Native RIPEMD160 not available via Hashlib, using Pure-Python (This will significantly reduce performance)")
+
         assert loading, 'use load_from_* to create a ' + self.__class__.__name__
         # loading crypto libraries is done in load_from_*
 
@@ -3229,7 +3594,7 @@ class WalletBither(object):
             privkey = cutils.int_to_bytes_padded( cutils.bytes_to_int(privkey) % cutils.GROUP_ORDER_INT )
             pubkey  = pubkey_from_secret(privkey).format(self._is_compressed)
             # Compute the hash160 of the public key, and check for a match
-            if hashlib_new("ripemd160", l_sha256(pubkey).digest()).digest() == self._pubkey_hash160:
+            if ripemd160(l_sha256(pubkey).digest()) == self._pubkey_hash160:
                 password = password.decode("utf_16_be", "replace")
                 return password, count
 
@@ -3500,7 +3865,7 @@ class WalletBIP39(object):
     opencl_algo = -1
 
     def __init__(self, mpk = None, addresses = None, address_limit = None, addressdb_filename = None,
-                 mnemonic = None, lang = None, path = None, wallet_type = "bip39", is_performance = False):
+                 mnemonic = None, lang = None, path = None, wallet_type = "bip39", is_performance = False, force_p2sh = False, checksinglexpubaddress = False, force_p2tr = False):
         from . import btcrseed
 
         wallet_type = wallet_type.lower()
@@ -3538,7 +3903,7 @@ class WalletBIP39(object):
             hash160s = None
 
         self.btcrseed_wallet = btcrseed_cls.create_from_params(
-            mpk, addresses, address_limit, hash160s, path, is_performance)
+            mpk, addresses, address_limit, hash160s, path, is_performance, force_p2sh = force_p2sh, checksinglexpubaddress = checksinglexpubaddress, force_p2tr = force_p2tr)
 
         if is_performance and not mnemonic:
             mnemonic = "certain come keen collect slab gauge photo inside mechanic deny leader drop"
@@ -3709,7 +4074,7 @@ class WalletSLIP39(object):
 
         while not recovery_state.is_complete():
             try:
-                if len(slip39_shares) > 0:
+                if slip39_shares is not None and len(slip39_shares) > 0:
                     mnemonic_str = slip39_shares.pop()
                 else:
                     mnemonic_str = click.prompt("Enter a recovery share")
@@ -4019,6 +4384,63 @@ class WalletPyCryptoHDWallet(WalletBIP39):
         return False, count
 
 
+############### Py_Crypto_HD_Wallet Based Wallets ####################
+class WalletEthereumValidator(WalletBIP39):
+
+    def __init__(self, mpk = None, addresses = None, address_limit = None, addressdb_filename = None,
+                 mnemonic = None, lang = None, path = None, wallet_type = "EthereumValidator", is_performance = False):
+        from . import btcrseed
+
+        btcrseed_cls = btcrseed.WalletEthereumValidator
+
+        global disable_security_warnings
+        btcrseed_cls.set_securityWarningsFlag(disable_security_warnings)
+        global normalize, hmac
+        from unicodedata import normalize
+        import hmac
+
+        # Create a btcrseed.WalletBIP39 object which will do most of the work;
+        # this also interactively prompts the user if not enough command-line options were included
+        if addressdb_filename:
+            from .addressset import AddressSet
+            print("Loading address database ...")
+            hash160s = AddressSet.fromfile(open(addressdb_filename, "rb"))
+        else:
+            hash160s = None
+
+        self.btcrseed_wallet = btcrseed_cls.create_from_params(
+            mpk, addresses, address_limit, hash160s, path, is_performance)
+
+        if is_performance and not mnemonic:
+            mnemonic = "certain come keen collect slab gauge photo inside mechanic deny leader drop"
+        self.btcrseed_wallet.config_mnemonic(mnemonic, lang)
+
+        # Verify that the entered mnemonic is valid
+        if not self.btcrseed_wallet.verify_mnemonic_syntax(btcrseed.mnemonic_ids_guess):
+            error_exit("one or more words are missing from the mnemonic")
+        if not self.btcrseed_wallet._verify_checksum(btcrseed.mnemonic_ids_guess):
+            error_exit("invalid mnemonic (the checksum is wrong)")
+        # We just verified the mnemonic checksum is valid, so 100% of the guesses will also be valid:
+        self.btcrseed_wallet._checksum_ratio = 1
+
+        self._mnemonic = " ".join(btcrseed.mnemonic_ids_guess)
+
+    def difficulty_info(self):
+        return "2048 PBKDF2-SHA512 iterations + BLS Derivation"
+
+    # This is the time-consuming function executed by worker thread(s). It returns a tuple: if a password
+    # is correct return it, else return False for item 0; return a count of passwords checked for item 1
+    def return_verified_password_or_false(self, passwords):
+        # Convert Unicode strings (lazily) to normalized UTF-8 bytestrings
+        passwords = map(lambda p: normalize("NFKD", p).encode("utf_8", "ignore"), passwords)
+
+        for count, password in enumerate(passwords, 1):
+
+            if self.btcrseed_wallet._verify_seed(mnemonic = self._mnemonic.split(" "), passphrase = password):
+                return password.decode("utf_8", "replace"), count
+
+        return False, count
+
 ############### Cadano Yoroi Wallet ###############
 
 # @register_wallet_class - not a "registered" wallet since there are no wallet files nor extracts
@@ -4133,6 +4555,8 @@ class WalletBrainwallet(object):
     def __init__(self, addresses = None, addressdb = None, check_compressed = True, check_uncompressed = True,
                  force_check_p2sh = False, isWarpwallet = False, salt = None, crypto = 'bitcoin', is_performance = False):
         global hmac, coincurve, base58, pylibscrypt
+        if not hashlib_ripemd160_available:
+            print("Warning: Native RIPEMD160 not available via Hashlib, using Pure-Python (This will significantly reduce performance)")
         import lib.pylibscrypt as pylibscrypt
         from lib.cashaddress import base58
         import hmac
@@ -4269,13 +4693,14 @@ class WalletBrainwallet(object):
 
                 pubkey = pubkey_from_secret(privkey).format(compressed = isCompressed)
 
-                pubkey_hash160 = hashlib_new("ripemd160", l_sha256(pubkey).digest()).digest()
+                pubkey_hash160 = ripemd160(l_sha256(pubkey).digest())
 
                 for input_address_p2sh in self.address_type_checks:
                     if (input_address_p2sh):  # Handle P2SH Segwit Address
                         WITNESS_VERSION = "\x00\x14"
                         witness_program = WITNESS_VERSION.encode() + pubkey_hash160
-                        hash160 = hashlib.new("ripemd160", l_sha256(witness_program).digest()).digest()
+
+                        hash160 = ripemd160(l_sha256(witness_program).digest())
                     else:
                         hash160 = pubkey_hash160
 
@@ -4387,7 +4812,7 @@ class WalletBrainwallet(object):
 
             hash160s_standard = []
             for hashed_pubkey in clResult_hashed_pubkey:
-                hash160s_standard.append(hashlib_new("ripemd160", hashed_pubkey).digest())
+                hash160s_standard.append(ripemd160(hashed_pubkey))
 
             hash160s = []
             for pubkey_hash160 in hash160s_standard:
@@ -4395,7 +4820,7 @@ class WalletBrainwallet(object):
                     if (input_address_p2sh):  # Handle P2SH Segwit Address
                         WITNESS_VERSION = "\x00\x14"
                         witness_program = WITNESS_VERSION.encode() + pubkey_hash160
-                        hash160s.append(hashlib.new("ripemd160", l_sha256(witness_program).digest()).digest())
+                        hash160s.append(ripemd160(l_sha256(witness_program).digest()))
                     else:
                         hash160s.append(pubkey_hash160)
 
@@ -4438,6 +4863,9 @@ class WalletRawPrivateKey(object):
     def __init__(self, addresses = None, addressdb = None, check_compressed = True, check_uncompressed = True,
                  force_check_p2sh = False, crypto = 'bitcoin', is_performance = False):
         global hmac, coincurve, base58
+        if not hashlib_ripemd160_available:
+            print("Warning: Native RIPEMD160 not available via Hashlib, using Pure-Python (This will significantly reduce performance)")
+
         from lib.cashaddress import base58
         import hmac
         try:
@@ -4533,8 +4961,10 @@ class WalletRawPrivateKey(object):
 
             #Work out what kind of private key we are handling
             WIFPrivKey = False
+
             if len(password) == 64: # Likely Hex Private Key (Don't need to do anything)
                 pass
+
             elif len(password) == 52 and password[0] in ["L","K"]: #Compressed Private Key
                 try:
                     password = binascii.hexlify(base58.b58decode_check(password)[1:-1])
@@ -4548,7 +4978,8 @@ class WalletRawPrivateKey(object):
                     WIFPrivKey = True
                 except:
                     continue
-
+            else: # Unsupported Private Key
+                continue
 
             # Convert the private key from text to raw private key...
             try:
@@ -4571,18 +5002,23 @@ class WalletRawPrivateKey(object):
                 else:
                     privcompress = bytes([])
 
-                pubkey = pubkey_from_secret(privkey).format(compressed = isCompressed)
+                # Sometimes it's possible that a privatekey (with a valid checksum) will still be invalid in terms of generating a usable address
+                try:
+                    pubkey = pubkey_from_secret(privkey).format(compressed = isCompressed)
+                except Exception as e:
+                    print("Exception for Privkey: ", password, " : ", e)
+                    continue
 
                 if self.crypto == 'ethereum':
                     pubkey_hash160 = keccak(pubkey[1:])[-20:]
                 else:
-                    pubkey_hash160 = hashlib_new("ripemd160", l_sha256(pubkey).digest()).digest()
+                    pubkey_hash160 = ripemd160(l_sha256(pubkey).digest())
 
                 for input_address_p2sh in self.address_type_checks:
                     if (input_address_p2sh):  # Handle P2SH Segwit Address
                         WITNESS_VERSION = "\x00\x14"
                         witness_program = WITNESS_VERSION.encode() + pubkey_hash160
-                        hash160 = hashlib.new("ripemd160", l_sha256(witness_program).digest()).digest()
+                        hash160 = ripemd160(l_sha256(witness_program).digest())
                     else:
                         hash160 = pubkey_hash160
 
@@ -4619,7 +5055,7 @@ class WalletEthKeystore(object):
         try:
             walletdata = wallet_file.read()
         except: return False
-        return (b"cipherparams" in walletdata and b"kdfparams" in walletdata)  # These are fairly distinctive for Eth UTC v3 files
+        return (b"cipherparams" in walletdata and b"kdfparams" in walletdata and b"imTokenMeta" not in walletdata)  # These are fairly distinctive for Eth UTC v3 files
 
     def __init__(self, loading=False):
         assert loading, 'use load_from_* to create a ' + self.__class__.__name__
@@ -4670,6 +5106,154 @@ class WalletEthKeystore(object):
 
             if self._dump_privkeys_file:
                 self.dump_privkeys(password)
+            return password.decode("utf_8", "replace"), count
+
+        return False, count
+
+############### Imtoken Keystore ###############
+
+# Imtoken keystores are basically a modified Eth keystore format
+
+@register_wallet_class
+class WalletImtokenKeystore(WalletEthKeystore):
+    opencl_algo = -1
+
+    @staticmethod
+    def is_wallet_file(wallet_file):
+        wallet_file.seek(0)
+        try:
+            walletdata = wallet_file.read()
+        except: return False
+        return (b"imTokenMeta" in walletdata)
+
+    @classmethod
+    def load_from_filename(cls, wallet_filename):
+        if not module_eth_keyfile_available:
+            print("eth-keyfile module is required for Eth Keystores (it can normally be installed with the command: pip3 install eth-keyfile)")
+            exit()
+        wallet_json = eth_keyfile.load_keyfile(wallet_filename)
+        wallet_json["version"] = 3
+        self = cls(loading=True)
+        self.wallet_json = wallet_json
+        return self
+
+    def passwords_per_seconds(self, seconds):
+        if self.wallet_json['crypto']['kdf'] == 'pbkdf2':
+            return 60
+
+    def dump_privkeys(self, correct_password):
+        with open(self._dump_privkeys_file, 'a') as logfile:
+            try:
+                key = eth_keyfile.decode_keyfile_json(self.wallet_json, correct_password)
+                logfile.write("BIP39 Root Key (For copy/paste) is below...\n")
+                logfile.write(key.decode())
+            except:
+                print("WARNING KEY DUMP FAILED: Found correct password but can't decode wallet XPRV, try running BTCRecover with identity.json from the imtoken data folder")
+
+    # This is the time-consuming function executed by worker thread(s). It returns a tuple: if a password
+    # is correct return it, else return False for item 0; return a count of passwords checked for item 1
+    def return_verified_password_or_false(self, arg_passwords):  # Ethereum Keystore (UTC) File
+        # Convert Unicode strings (lazily) to UTF-8 bytestrings
+        passwords = map(lambda p: p.encode("utf_8", "ignore"), arg_passwords)
+
+        for count, password in enumerate(passwords, 1):
+            try:
+                eth_keyfile.decode_keyfile_json(self.wallet_json,password)
+            except ValueError: # Throws a value error if MAC mismatches
+                continue
+
+            if self._dump_privkeys_file:
+                self.dump_privkeys(password)
+            return password.decode("utf_8", "replace"), count
+
+        return False, count
+
+############### btc.com Wallet (blocktrail wallet) ###############
+# Used to recover the wallet password to enable recovery from the btc.com recovery PDF.
+# The logic and variable names here follow the code/logic from https://github.com/blocktrail/wallet-recovery-tool/
+# as closely as possible
+
+@register_wallet_class
+class Walletbtc_com(object):
+    opencl_algo = -1
+
+    def decode(self, mnemonic):
+        paddingDummy = 129  # Because salts with length > 128 should be forbidden
+        mnemo = Mnemonic("english")
+        decoded_data = mnemo.to_entropy(mnemonic)
+
+        padFinish = 0
+        while True:
+            if decoded_data[padFinish] == paddingDummy:
+                padFinish = padFinish + 1
+            else:
+                break
+
+        return decoded_data[padFinish:]
+
+    @staticmethod
+    def is_wallet_file(wallet_file):
+        wallet_file.seek(0)
+        try:
+            walletdata = wallet_file.read()
+        except: return False
+        return (b"passwordEncryptedSecretMnemonic" in walletdata) # A pretty unique tag in
+
+    @classmethod
+    def load_from_filename(cls, wallet_filename):
+        self = cls()
+
+        # Open a JSON file containing the wallet data, as parsed by the browser based btc.com wallet recovery tool
+        # (You can manually create this file, all BTCRecover uses is the password encrypted secret mnemonic,
+        # you can leave the rest out to avoid exposing the actal wallet private keys to the system running BTCRecover)
+        with open(wallet_filename) as wallet_file:
+            wallet_json = json.load(wallet_file)
+
+        PasswordEncryptedSecret = wallet_json['passwordEncryptedSecretMnemonic'].strip()
+        passwordEncryptedSecretMnemonic = self.decode(PasswordEncryptedSecret)
+
+        # Save the salt length
+        self.saltLen = passwordEncryptedSecretMnemonic[0]
+        passwordEncryptedSecretMnemonic = passwordEncryptedSecretMnemonic[1:]
+
+        # Save the salt
+        self.salt = passwordEncryptedSecretMnemonic[:self.saltLen]
+        passwordEncryptedSecretMnemonic = passwordEncryptedSecretMnemonic[self.saltLen:]
+
+        # Save the iterations #
+        self.iterations = int.from_bytes(passwordEncryptedSecretMnemonic[:4], 'little')
+        passwordEncryptedSecretMnemonic = passwordEncryptedSecretMnemonic[4:]
+
+        # Construct and save the header
+        self.header = self.decode(PasswordEncryptedSecret)[:1 + self.saltLen + 4]
+
+        # Save the IV
+        self.iv = passwordEncryptedSecretMnemonic[:16]
+        passwordEncryptedSecretMnemonic = passwordEncryptedSecretMnemonic[16:]
+
+        # Save the cyphertext and tag
+        self.ct_t = passwordEncryptedSecretMnemonic
+        return self
+
+    def passwords_per_seconds(self, seconds):
+        # Haven't worked this out, but this is a ballpark figure
+        return 200
+
+    # This is the time-consuming function executed by worker thread(s). It returns a tuple: if a password
+    # is correct return it, else return False for item 0; return a count of passwords checked for item 1
+    def return_verified_password_or_false(self, arg_passwords):  # btc.com wallet password
+        # Convert Unicode strings (lazily) to UTF-8 bytestrings
+        passwords = map(lambda p: p.encode("utf_8", "ignore"), arg_passwords)
+
+        for count, password in enumerate(passwords, 1):
+            key = hashlib.pbkdf2_hmac('sha512', password, self.salt, self.iterations, 32)
+            cipher = AES.new(key, AES.MODE_GCM, self.iv)
+            cipher.update(self.header)
+            try:
+                decrypted_data = cipher.decrypt_and_verify(self.ct_t[:32], self.ct_t[32:])
+            except ValueError: # Throws a value error if MAC mismatches
+                continue
+
             return password.decode("utf_8", "replace"), count
 
         return False, count
@@ -5076,9 +5660,16 @@ def open_or_use(filename, mode = "r",
         return None
     #
     if tstr == str and "b" not in mode:
-        file = io.open(filename, mode, encoding="utf_8_sig", errors=decoding_errors)
+        if filename[-3:] == ".gz":
+            mode = mode + "t"
+            file = gzip.open(filename, mode, encoding="utf_8_sig", errors=decoding_errors)
+        else:
+            file = io.open(filename, mode, encoding="utf_8_sig", errors=decoding_errors)
     else:
-        file = open(filename, mode)
+        if filename[-3:] == ".gz":
+            file = gzip.open(filename, mode)
+        else:
+            file = open(filename, mode)
     #
     if "b" not in mode:
         if file.read(5) == br"{\rtf":
@@ -5118,6 +5709,9 @@ def init_parser_common():
         parser_common.add_argument("--wallet",      metavar="FILE", help="the wallet file (this, --data-extract, or --listpass is required)")
         parser_common.add_argument("--typos",       type=int, metavar="COUNT", help="simulate up to this many typos; you must choose one or more typo types from the list below")
         parser_common.add_argument("--min-typos",   type=int, default=0, metavar="COUNT", help="enforce a min # of typos included per guess")
+        parser_common.add_argument("--password-repeats-pretypos", action="store_true", help="Also test multiple repititions of each candidate password BEFORE any typos are applied(eg: passwordpassword)")
+        parser_common.add_argument("--password-repeats-posttypos", action="store_true", help="Also test multiple repititions of each candidate password AFTER any typos are applied (eg: passwordpassword)")
+        parser_common.add_argument("--max-password-repeats", type=int, default=2, metavar="COUNT", help="Max number of additional repetitions of the password to produce (Both the PRE and POST repeats functions use this)")
         typo_types_group = parser_common.add_argument_group("typo types")
         typo_types_group.add_argument("--typos-capslock", action="store_true", help="try the password with caps lock turned on")
         typo_types_group.add_argument("--typos-swap",     action="store_true", help="swap two adjacent characters")
@@ -5133,6 +5727,7 @@ def init_parser_common():
         parser_common.add_argument("--regex-never", metavar="STRING",    help="never try passwords which match the given regular expr")
         parser_common.add_argument("--length-min", 	type=int, default=0, metavar="COUNT",    help="skip passwords shorter than given length")
         parser_common.add_argument("--length-max", 	type=int, default=999999, metavar="COUNT",    help="skip passwords longer than given length")
+        parser_common.add_argument("--truncate-length", 	type=int, default=999999, metavar="COUNT",    help="Truncate passwords to be this number of characters long (Useful in situations like Trezor Passprase, etc)")
         parser_common.add_argument("--delimiter",   metavar="STRING",    help="the delimiter between tokens in the tokenlist or columns in the typos-map (default: whitespace)")
         parser_common.add_argument("--skip",        type=int, default=0,    metavar="COUNT", help="skip this many initial passwords for continuing an interrupted search")
         parser_common.add_argument("--threads",     type=int, metavar="COUNT", help="number of worker threads (default: number of logical CPU cores")
@@ -5189,6 +5784,9 @@ def init_parser_common():
         bip39_group.add_argument("--language",   metavar="LANG-CODE",   help="the wordlist language to use (see wordlists/README.md, default: auto)")
         bip39_group.add_argument("--bip32-path", metavar="PATH",        nargs="+",           help="path (e.g. m/0'/0/) excluding the final index. You can specify multiple derivation paths seperated by a space Eg: m/84'/0'/0'/0 m/84'/0'/1'/0 (default: BIP44,BIP49 & BIP84 account 0)")
         bip39_group.add_argument("--substrate-path",  metavar="PATH", nargs="+",           help="Substrate path (eg: //hard/soft). You can specify multiple derivation paths by a space Eg: //hard /soft //hard/soft (default: No Path)")
+        bip39_group.add_argument("--checksinglexpubaddress", action="store_true", help="Check non-standard single address wallets (Like MyBitcoinWallet and PT.BTC")
+        bip39_group.add_argument("--force-p2sh",  action="store_true",   help="Force checking of P2SH segwit addresses for all derivation paths (Required for devices like CoolWallet S if if you are using P2SH segwit accounts on a derivation path that doesn't start with m/49')")
+        bip39_group.add_argument("--force-p2tr",  action="store_true",   help="Force checking of P2TR (Taproot) addresses for all derivation paths (Required for wallets like Bitkeep/Bitget that put all accounts on  m/44')")
         bip39_group.add_argument("--mnemonic",  metavar="MNEMONIC",       help="Your best guess of the mnemonic (if not entered, you will be prompted)")
         bip39_group.add_argument("--mnemonic-prompt", action="store_true", help="prompt for the mnemonic guess via the terminal (default: via the GUI)")
         yoroi_group = parser_common.add_argument_group("Yoroi Cadano Wallet")
@@ -5315,6 +5913,10 @@ def parse_arguments(effective_argv, wallet = None, base_iterator = None,
                         help="try tokens in the order in which they are listed in the file, without trying their permutations")
     parser.add_argument("--seedgenerator", action="store_true",
                                help=argparse.SUPPRESS)  # Flag to be able to indicate to generators that we are doing seed generation, not password generation
+    parser.add_argument("--mnemonic-length", type=int,
+                               help=argparse.SUPPRESS)  # Argument used for generators in seed generation, not password generation
+    parser.add_argument("--seed-transform-wordswaps", type=int,
+                               help=argparse.SUPPRESS)  # Flag to be able to indicate to generators that we want to also try swapped words for seed generation
     parser.add_argument("--max-tokens",   type=int, default=sys.maxsize, metavar="COUNT", help="enforce a max # of tokens included per guess")
     parser.add_argument("--min-tokens",   type=int, default=1,          metavar="COUNT", help="enforce a min # of tokens included per guess")
     parser._add_container_actions(parser_common)
@@ -5322,6 +5924,10 @@ def parse_arguments(effective_argv, wallet = None, base_iterator = None,
     parser.add_argument("--restore",      metavar="FILE",      help="restore progress and options from an autosave file (must be the only option on the command line)")
     parser.add_argument("--passwordlist", metavar="FILE", nargs="?", const="-", help="instead of using a tokenlist, read complete passwords (exactly one per line) from this file or from stdin")
     parser.add_argument("--has-wildcards",action="store_true", help="parse and expand wildcards inside passwordlists (default: wildcards are only parsed inside tokenlists)")
+    parser.add_argument("--wildcard-custom-list-e",metavar="FILE", help="Path to a custom list file which will be used fr the %%e expanding wildcard")
+    parser.add_argument("--wildcard-custom-list-f",metavar="FILE", help="Path to a custom list file which will be used fr the %%f expanding wildcard")
+    parser.add_argument("--wildcard-custom-list-j",metavar="FILE", help="Path to a custom list file which will be used fr the %%j expanding wildcard")
+    parser.add_argument("--wildcard-custom-list-k",metavar="FILE", help="Path to a custom list file which will be used fr the %%k expanding wildcard")
 
     #
     # Optional bash tab completion support
@@ -5363,6 +5969,20 @@ def parse_arguments(effective_argv, wallet = None, base_iterator = None,
                             help="enforce a min # of tokens included per guess")
         parser.add_argument("--seedgenerator", action="store_true",
                             help=argparse.SUPPRESS)  # Flag to be able to indicate to generators that we are doing seed generation, not password generation
+        parser.add_argument("--keep-tokens-order", action="store_true",
+                            help="try tokens in the order in which they are listed in the file, without trying their permutations")
+        parser.add_argument("--mnemonic-length", type=int,
+                            help=argparse.SUPPRESS)  # Argument used for generators in seed generation, not password generation
+        parser.add_argument("--seed-transform-wordswaps", type=int,
+                            help=argparse.SUPPRESS)  # Flag to be able to indicate to generators that we want to also try swapped words for seed generation
+        parser.add_argument("--wildcard-custom-list-e", metavar="FILE",
+                            help="Path to a custom list file which will be used fr the %%e expanding wildcard")
+        parser.add_argument("--wildcard-custom-list-f", metavar="FILE",
+                            help="Path to a custom list file which will be used fr the %%f expanding wildcard")
+        parser.add_argument("--wildcard-custom-list-j", metavar="FILE",
+                            help="Path to a custom list file which will be used fr the %%j expanding wildcard")
+        parser.add_argument("--wildcard-custom-list-k", metavar="FILE",
+                            help="Path to a custom list file which will be used fr the %%k expanding wildcard")
 
         parser._add_container_actions(parser_common)
         # Add these in as non-options so that args gets a copy of their values
@@ -5471,7 +6091,7 @@ def parse_arguments(effective_argv, wallet = None, base_iterator = None,
         if tokenlist_file and tokenlist_file.peek() == b"#": # if it's either a comment or additional args
             first_line = tokenlist_file.readline()
             tokenlist_first_line_num = 2                     # need to pass this to parse_token_list
-            if re.match("#\s*--", first_line, re.UNICODE):  # if it's additional args, not just a comment
+            if re.match(r"#\s*--", first_line, re.UNICODE):  # if it's additional args, not just a comment
                 print("Warning: all options loaded from restore file; ignoring options in tokenlist file '"+tokenlist_file.name+"'", file=sys.stderr)
         print("Using autosave file '"+restore_filename+"'")
         args.skip = savestate["skip"]  # override this with the most recent value
@@ -5523,7 +6143,7 @@ def parse_arguments(effective_argv, wallet = None, base_iterator = None,
 
 
     # Do some basic globals initialization; the rest are all done below
-    init_wildcards()
+    init_wildcards(args.wildcard_custom_list_e, args.wildcard_custom_list_f, args.wildcard_custom_list_j, args.wildcard_custom_list_k)
     init_password_generator()
 
     # Do a bunch of argument sanity checking
@@ -5835,18 +6455,21 @@ def parse_arguments(effective_argv, wallet = None, base_iterator = None,
         if args.wallet_type == "cardano":
             loaded_wallet = WalletCardano(args.addrs, args.addressdb, mnemonic,
                                         args.language, args.bip32_path, args.performance)
-        elif args.wallet_type in ['avalanche', 'tron', 'solana']:
+        elif args.wallet_type in ['avalanche', 'tron', 'solana', 'cosmos', 'tezos','stellar','multiversx']:
             loaded_wallet = WalletPyCryptoHDWallet(args.mpk, args.addrs, args.addr_limit, args.addressdb, mnemonic,
                                     args.language, args.bip32_path, args.wallet_type, args.performance)
         elif args.wallet_type in ['polkadotsubstrate']:
             loaded_wallet = WalletPyCryptoHDWallet(args.mpk, args.addrs, args.addr_limit, args.addressdb, mnemonic,
                                     args.language, args.substrate_path, args.wallet_type, args.performance)
+        elif args.wallet_type == "ethereumvalidator":
+            loaded_wallet = WalletEthereumValidator(args.mpk, args.addrs, args.addr_limit, args.addressdb, mnemonic,
+                                    args.language, args.bip32_path, args.wallet_type, args.performance)
         elif args.slip39:
             loaded_wallet = WalletSLIP39(args.mpk, args.addrs, args.addr_limit, args.addressdb, args.slip39_shares,
                                     args.language, args.bip32_path, args.wallet_type, args.performance)
         else:
             loaded_wallet = WalletBIP39(args.mpk, args.addrs, args.addr_limit, args.addressdb, mnemonic,
-                                    args.language, args.bip32_path, args.wallet_type, args.performance)
+                                    args.language, args.bip32_path, args.wallet_type, args.performance, force_p2sh = args.force_p2sh,checksinglexpubaddress =  args.checksinglexpubaddress, force_p2tr = args.force_p2tr)
 
 
     if args.yoroi_master_password:
@@ -5934,7 +6557,7 @@ def parse_arguments(effective_argv, wallet = None, base_iterator = None,
             if loaded_wallet._dump_wallet_file:
                 pass
         except AttributeError:
-            exit("This wallet type does not currently support dumping the decrypted wallet file... (But it might support decrypting private keys, so give that I try)")
+            exit("This wallet type does not currently support dumping the decrypted wallet file... (But it might support decrypting private keys (--dump-privkeys), so give that a try)")
 
         loaded_wallet._dump_wallet_file = args.dump_wallet
 
@@ -5950,7 +6573,7 @@ def parse_arguments(effective_argv, wallet = None, base_iterator = None,
     if (args.dump_privkeys or args.dump_wallet) and \
             (args.correct_wallet_password or args.correct_wallet_secondpassword) and \
             (not (args.passwordlist or args.tokenlist or args.performance)):
-        print("\nDumping Wallet File\Keys...")
+        print("\nDumping Wallet File or Keys...")
         if args.correct_wallet_secondpassword:
             result, count = loaded_wallet.return_verified_password_or_false([args.correct_wallet_secondpassword])
         elif args.correct_wallet_password:
@@ -6411,6 +7034,7 @@ def parse_mapfile(map_file, running_hash = None, feature_name = "map", same_perm
             #
             # Remove the trailing newline, then split the line exactly
             # once on the specified delimiter (default: whitespace)
+            if args.delimiter: args.delimiter = args.delimiter.encode().decode('unicode_escape')
             split_line = line.strip("\r\n").split(args.delimiter, 1)
             if split_line in ([], [tstr('')]): continue  # ignore empty lines
             if len(split_line) == 1:
@@ -6603,7 +7227,7 @@ def parse_tokenlist(tokenlist_file, first_line_num = 1):
 
         # Ignore comments
         if line.startswith("#"):
-            if re.match("#\s*--", line, re.UNICODE):
+            if re.match(r"#\s*--", line, re.UNICODE):
                 print("Warning: all options must be on the first line, ignoring options on line", str(line_num), file=sys.stderr)
             continue
 
@@ -6614,6 +7238,26 @@ def parse_tokenlist(tokenlist_file, first_line_num = 1):
         # Remove the trailing newline, then split the line on the
         # specified delimiter (default: whitespace) to get a list of tokens
         new_list.extend( line.strip("\r\n").split(args.delimiter) )
+
+        # A simple fix to handle the situation where someone has a space in a custom expanding wildcard
+        temp_new_list = [None]
+        tempToken = None
+        for token in new_list:
+            if token is None: continue
+            if "%" in token[:5] and "[" in token[:5] and "]" not in token:
+                tempToken = token
+                continue
+
+            if tempToken is not None:
+                delimiter = " "
+                if args.delimiter is not None:
+                    delimiter = args.delimiter
+                token = tempToken + delimiter + token
+                tempToken = None
+
+            temp_new_list.append(token)
+
+        new_list = temp_new_list
 
         # Ignore empty lines
         if new_list in ([None], [None, tstr('')]): continue
@@ -6815,6 +7459,7 @@ def password_generator(chunksize = 1, only_yield_count = False):
     l_seed_generator = args.seedgenerator
     l_length_min = args.length_min
     l_length_max = args.length_max
+    l_truncate_length = args.truncate_length
 
     if l_args_worker:
         l_workers_total = workers_total
@@ -6822,19 +7467,30 @@ def password_generator(chunksize = 1, only_yield_count = False):
 
     # Build up the modification_generators list; see the inner loop below for more details
     modification_generators = []
-    if l_seed_generator is False: #If using generators to generate seed phrases from token/password list, then ignore modification generators
-        if has_any_wildcards:    modification_generators.append( expand_wildcards_generator )
-        if args.typos_capslock:  modification_generators.append( capslock_typos_generator   )
-        if args.typos_swap:      modification_generators.append( swap_typos_generator       )
-        if enabled_simple_typos: modification_generators.append( simple_typos_generator     )
-        if args.typos_insert:    modification_generators.append( insert_typos_generator     )
-    modification_generators_len = len(modification_generators)
+
+    if has_any_wildcards:               modification_generators.append( expand_wildcards_generator )
+
+    if l_seed_generator is False:
+        if args.password_repeats_pretypos:  modification_generators.append( password_repeats_generator )
+        if args.typos_capslock:             modification_generators.append( capslock_typos_generator   )
+        if args.typos_swap:                 modification_generators.append( swap_typos_generator       )
+        if enabled_simple_typos:            modification_generators.append( simple_typos_generator     )
+        if args.typos_insert:               modification_generators.append( insert_typos_generator     )
+        if args.password_repeats_posttypos: modification_generators.append( password_repeats_generator )
 
     # Only the last typo generator needs to enforce a min-typos requirement
     if args.min_typos and (l_seed_generator is False):
-        assert modification_generators[-1] != expand_wildcards_generator
-        # set the min_typos argument default value
-        modification_generators[-1].__defaults__ = (args.min_typos,)
+        # Though this isn't applicable to the expand wildcards generator
+        if modification_generators[-1] != expand_wildcards_generator:
+            # set the min_typos argument default value
+            modification_generators[-1].__defaults__ = (args.min_typos,)
+
+    # Modification generators for seed generation
+    if args.seed_transform_wordswaps:
+        modification_generators.append(swap_tokens_generator)
+        modification_generators[-1].__defaults__ = (args.seed_transform_wordswaps,)
+
+    modification_generators_len = len(modification_generators)
 
     # The base password generator is set in parse_arguments(); it's either an iterable
     # or a generator function (which returns an iterator) that produces base passwords
@@ -6875,9 +7531,16 @@ def password_generator(chunksize = 1, only_yield_count = False):
                 #print("Skipping ",password," - too long \r", end="", flush=True)
                 continue
 
+            # If it's a seed, split it up into a list
+            if l_seed_generator and not isinstance(password,list) and not isinstance(password,tuple):
+                password = password.split(" ")
+
             # This is the check_only argument optionally passed
             # by external libraries to parse_arguments()
             if custom_final_checker and not custom_final_checker(password): continue
+
+            # Truncate password if required
+            password = password[0:l_truncate_length]
 
             # This duplicate check can be disabled via --no-dupchecks
             # because it can take up a lot of memory, sometimes needlessly
@@ -6949,6 +7612,23 @@ def generator_product(initial_value, generator, *other_generators):
             for final_value in generator_product(intermediate_value, *other_generators):
                 yield final_value
 
+# A recursive function that will swap one pair of words in a given mnemonic and then,
+# if required, will call itself recursively to handle further possible swaps.
+
+# This implementation prioritises simplicity leaves it to other dup-check functions
+# to handle duplicates created through repeated swaps.
+# (Though isn't really an issue for small numbers of swaps either way)
+
+# Note: There is a bit of inconsistency in the data type of password_base depending on
+# whether tokenlists/seedlists are being used. (Hence why there are a few casts between tuple and list)
+def swap_tokens_generator(password_base, numSwaps = 0):
+    yield tuple(password_base)
+    password_base = list(password_base)
+    # If we have reached the end then simply return the base password
+    if numSwaps > 0:
+        for i, j in itertools.combinations(range(len(password_base)), 2):
+            swapped_seed = tuple(password_base[:i] + [password_base[j]] + password_base[i+1:j] + [password_base[i]] + password_base[j+1:])
+            yield from swap_tokens_generator(swapped_seed, numSwaps - 1)
 
 # The tokenlist generator function produces all possible password permutations from the
 # token_lists global as constructed by parse_tokenlist(). These passwords are then used
@@ -6973,15 +7653,7 @@ def tokenlist_base_password_generator():
     l_list                   = list
     l_tstr                   = tstr
     l_seed_generator         = args.seedgenerator
-
-    # Temporary Fix for the "--keep-tokens-order" argument.
-    # Hasn't been fully tested in BTCRecover.py and breaks seedrecover...
-    try:
-        if args.keep_tokens_order:
-            pass
-    except:
-        if l_seed_generator:
-            args.keep_tokens_order = False
+    l_mnemonic_length        = args.mnemonic_length
 
     # Choose between the custom duplicate-checking and the standard itertools permutation
     # functions for the outer loop unless the custom one has been specifically disabled
@@ -7152,7 +7824,18 @@ def tokenlist_base_password_generator():
                 if invalid_anchors: continue
 
             if l_seed_generator:
-                yield ordered_token_guess
+                expandedGuess = []
+                for rawToken in ordered_token_guess:
+                    expandedGuess.extend(rawToken.split(","))
+
+                if l_mnemonic_length is None: # If mnemonic_length hasn't been specified then skip this check
+                    yield expandedGuess
+                else:
+                    if len(expandedGuess) == l_mnemonic_length: #Only return mnemonic guesses of the expected length
+                        yield expandedGuess
+                    else:
+                        break
+
             else:
                 yield l_tstr().join(ordered_token_guess)
 
@@ -7412,12 +8095,30 @@ def default_performance_base_password_generator():
 #   prior_prefix + password_with_all_wildcards_expanded
 # TODO: implement without recursion?
 def expand_wildcards_generator(password_with_wildcards, prior_prefix = None):
+    if isinstance(password_with_wildcards, list):
+        password_with_wildcards = " ".join(password_with_wildcards)
+
     if prior_prefix is None: prior_prefix = tstr()
 
     # Quick check to see if any wildcards are present
     if tstr("%") not in password_with_wildcards:
         # If none, just produce the string and end
         yield prior_prefix + password_with_wildcards
+        return
+
+    # %e and %f are special types of wildcards which can both be customised AND can occur multiple times, but always have the same value
+    if "%e" in password_with_wildcards:
+        for wildcard in wildcard_sets["e"]:
+            loop_password_with_wildcards = password_with_wildcards.replace("%e", wildcard)
+            for password_expanded in expand_wildcards_generator(loop_password_with_wildcards):
+                yield password_expanded
+        return
+
+    if "%f" in password_with_wildcards:
+        for wildcard in wildcard_sets["f"]:
+            loop_password_with_wildcards = password_with_wildcards.replace("%f", wildcard)
+            for password_expanded in expand_wildcards_generator(loop_password_with_wildcards):
+                yield password_expanded
         return
 
     # Copy a few globals into local for a small speed boost
@@ -7539,7 +8240,6 @@ def expand_wildcards_generator(password_with_wildcards, prior_prefix = None):
 
             # Expand the wildcard into a length of characters according to the wildcard type/caseflag
             for wildcard_expanded_list in itertools.product(wildcard_set, repeat=wildcard_len):
-
                 # If the wildcard was at the end of the string, we're done
                 if password_postfix_with_wildcards == "":
                     yield full_password_prefix + tstr().join(wildcard_expanded_list)
@@ -7858,6 +8558,15 @@ def insert_typos_generator(password_base, min_typos = 0):
 
         typos_sofar -= inserts_count
 
+# password_repeats_generator() is a generator function which creates repetitions of the base password
+def password_repeats_generator(password_base, min_typos = 0):
+    global typos_sofar
+
+    # Copy a few globals into local for a small speed boost
+    l_max_password_repeats = args.max_password_repeats
+
+    for i in range(1,l_max_password_repeats+1):
+        yield password_base * (i)
 
 ################################### Main ###################################
 

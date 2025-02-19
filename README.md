@@ -3,7 +3,7 @@
 
 *BTCRecover* is an open source wallet password and seed recovery tool.
 
-For seed based recovery, this is primarily useful in situations where you have lost/forgotten parts of your mnemonic, or have made an error transcribing it. (So you are either seeing an empty wallet or gettign an error that your seed is invalid)
+For seed based recovery, this is primarily useful in situations where you have lost/forgotten parts of your mnemonic, or have made an error transcribing it. (So you are either seeing an empty wallet or getting an error that your seed is invalid)
 
 For wallet password or passphrase recovery, it is primarily useful if you have a reasonable idea about what your password might be.
 
@@ -20,7 +20,7 @@ If you need help, [your best bet is to look at my BTCRecover playlist on YouTube
     * Bitcoin
     * Bitcoin Cash
     * Cardano (Shelley Era Addresses)
-    * Cosmos (Atom)
+    * Cosmos (Atom) Any many other Cosmos Chains (Nym, GravityBridge, etc)
     * Dash
     * DigiByte
     * Dogecoin
@@ -29,10 +29,14 @@ If you need help, [your best bet is to look at my BTCRecover playlist on YouTube
     * Helium
     * Litecoin
     * Monacoin
+    * MultiversX
     * Polkadot (sr25519, like those produced by polkadot.js)
     * Ripple
+    * Secret Network
     * Solana
+    * Stacks
     * Stellar
+    * Tezos
     * Tron
     * Vertcoin
     * Zilliqa
@@ -64,12 +68,15 @@ If you need help, [your best bet is to look at my BTCRecover playlist on YouTube
          * [Ledger](https://www.ledgerwallet.com/)
          * [Keepkey](https://shapeshift.io/keepkey/)
          * [ColdCard](https://coldcardwallet.com/)
+         * [Blockstream Jade](https://blockstream.com/jade/)
          * [Jaxx](https://jaxx.io/)
          * [Coinomi](https://www.coinomi.com/)
          * [Exodus](https://www.exodus.io/)
          * [MyEtherWallet](https://www.myetherwallet.com/)
+         * [Trust Wallet](https://trustwallet.com/)
          * [Bither](https://bither.net/)
          * [Blockchain.com](https://blockchain.com/wallet)
+     * Ethereum Validator BIP39 Seed Recovery
  * Bitcoin wallet password recovery support for:
      * [Bitcoin Core](https://bitcoincore.org/)
      * [MultiBit HD](https://multibit.org/) and [MultiBit Classic](https://multibit.org/help/v0.5/help_contents.html)
@@ -79,6 +86,7 @@ If you need help, [your best bet is to look at my BTCRecover playlist on YouTube
      * [mSIGNA (CoinVault)](https://ciphrex.com/products/)
      * [Blockchain.com](https://blockchain.com/wallet)
      * [block.io](https://block.io/) (Recovery of wallet "Secret PIN")
+     * [btc.com (aka blocktrail)](https://btc.com) (Recovery of wallet password, needed to decrypt the PDF backup sheets)
      * [pywallet --dumpwallet](https://github.com/jackjack-jj/pywallet) of Bitcoin Unlimited/Classic/XT/Core wallets
      * [Bitcoin Wallet for Android/BlackBerry](https://play.google.com/store/apps/details?id=de.schildbach.wallet) spending PINs and encrypted backups
      * [KnC Wallet for Android](https://github.com/kncgroup/bitcoin-wallet) encrypted backups
@@ -89,6 +97,7 @@ If you need help, [your best bet is to look at my BTCRecover playlist on YouTube
         * sCrypt Secured Brainwallets (Eg: Warpwallet, Memwallet)
  * Altcoin password recovery support for most wallets derived from one of those above, including:
      * [Coinomi](https://www.coinomi.com/en/) (Only supports password protected wallets)
+     * [imToken](https://token.im/)
      * [Metamask](https://metamask.io/) (And Metamask clones like Binance Chain Wallet, Ronin Wallet, etc.)
      * [Litecoin Core](https://litecoin.org/)
      * [Electrum-LTC](https://electrum-ltc.org/) (For Legacy and Segwit Wallets. Set --bip32-path "m/0'/0" for a Segwit wallet, leave bip32-path blank for Legacy... No support for 2fa wallets...)
@@ -116,7 +125,7 @@ If you need help, [your best bet is to look at my BTCRecover playlist on YouTube
  * “Offline” mode for nearly all supported wallets - use one of the [extract scripts (click for more information)](docs/Extract_Scripts.md) to extract just enough information to attempt password recovery, without giving *btcrecover* or whoever runs it access to *any* of the addresses or private keys in your Bitcoin wallet.
 
 ## Setup and Usage Tutorials ##
-BTCRecover is a Python (3.6, 3.7, 3.8, 3.9) script so will run on Windows, Linux and Mac environments. [See the installation guide for more info](docs/INSTALL.md)
+BTCRecover is a Python (3.8, 3.9, 3.10, 3.11) script so will run on Windows, Linux and Mac environments. [See the installation guide for more info](docs/INSTALL.md)
 
 [I have created a growing playlist](https://www.youtube.com/playlist?list=PL7rfJxwogDzmd1IanPrmlTg3ewAIq-BZJ) that covers a number of usage examples for using this tool to recover seed phrases, BIP39 passphrases, etc.
 

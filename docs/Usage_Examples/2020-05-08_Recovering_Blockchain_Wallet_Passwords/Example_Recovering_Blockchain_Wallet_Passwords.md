@@ -1,13 +1,13 @@
 # Recovering Blockchain.com Wallets 
 #### _Previously known as blockchain.info_
-[YouTube Video can be found here: https://youtu.be/rkw23s7s4as](https://youtu.be/rkw23s7s4as)
+[YouTube Video can be found here: https://youtu.be/rkw23s7s4as](https://youtu.be/f63FpoTKwSw)
 
 **Note:** The YouTube video and examples were made before OpenCL acceleration was added to Blockchain.com wallets and can give at least a 10x performance improvement. (See [GPU Accleration](../../GPU_Acceleration.md) for more info) 
 
 ## Overview
-As of 2020, all blockchain.com wallets will require that you first use [this extract script](./../../../extract-scripts/download-blockchain-wallet.py) to download the wallet file.
+[Firstly you download the wallet file as per the process here:](./../../../TUTORIAL/#downloading-blockchaincom-wallet-files)
 
-Once you have that file, there are two ways that blockchain.com wallets can be recovered.
+Once you have that file, there are three ways that blockchain.com wallets can be recovered.
 
 **1) Using the wallet file directly**
 
@@ -19,18 +19,21 @@ Extracting a small amount of data from the wallet file and running BTCRecover wi
 
 Using a wallet extract requires a few extra steps... [See here for more info about Extract Scripts...](./../../../Extract_Scripts/)
 
+**3) Recover the wallet password from legacy wallet recovery mnemonic**
+
+Blockchain.info previously offered users a wallet recovery mnemonic phrase to [recover their wallet passwords](https://login.blockchain.com/wallet/recover-wallet) from different dictionaries [v2](https://github.com/blockchain/unused-My-Wallet/blob/master/mnemonic.js#L319), [v3](https://github.com/blockchain/unused-My-Wallet/blob/master/mnemonic_words_v3.html)
+
+The recovery mnemonic phase can contain between 6 - 25+ words, though v2 mnemonics will be a multiple of 3
+
+Once you recover your seed phrase it will reveal your password, the password can be used with the wallet the "normal" way, if you changed your password it will only recover the first password.
+
 ## Example 1 - Using a TokenList to recover wallet Main Password from a wallet file
 
 ### Download the wallet file...
 
-Navigate to the BTCRecover folder and run:
-**Command**
+[Download the wallet file as per the process here:](./../../../TUTORIAL/#downloading-blockchaincom-wallet-files)
 
-`python  ./extract-scripts/download-blockchain-wallet.py`
-
-You will then be prompted for your walletID, will need to confirm the request via email and enter any required 2fa code. (In the video I use 558751da-d609-486d-88a5-623434a48368, but you won't have access to my email account to confirm that...)
-
-This will then create a file wallet.aes.json (Which can just be left in your BTCRecover folder be used instead of the wallet file in any of the examples below)
+After doing the process above, we will save the wallet data in a file called wallet.aes.json (Which can just be left in your BTCRecover folder be used instead of the wallet file in any of the examples below)
 
 ### Create the TokenList File 
 **Example Tokenlist - tokenListTest.txt**
@@ -94,3 +97,17 @@ YnM6LeP7peG853HnQlaGswlwpwtqXKwa/1rLyeGzvKNl9HpyjnaeTCZDAaC4LbJcVkxaECcAACwXY6w=
 `python btcrecover.py --data-extract --typos-case --typos-delete --typos 4 --passwordlist docs/Usage_Examples/2020-05-08_Recovering_Blockchain_Wallet_Passwords/passwordListTest_1.txt`
 
 You will be prompted to enter the data extract, so paste `YnM6LeP7peG853HnQlaGswlwpwtqXKwa/1rLyeGzvKNl9HpyjnaeTCZDAaC4LbJcVkxaECcAACwXY6w=` from the previous step.
+
+## Example 4 - Recovering the wallet password for a Blockchain Legacy Recovery Mnemonic
+
+**Note:** These are an older type of mnemonic that is not the same as a BIP39 mnemonic. These mnemonics came in various lengths and could be used to recover either the account password, or the account ID and password. 
+
+The password will only be the password that was set when the mnemonic was created, if the password was changed after this then this recovery mnemonic is of no use to you... If you still have the wallet.aes.json file, then you can also use the password derived from this process to decrypt/dump the wallet file.
+
+### Run BTCRecover with your suspected seed phrase and length
+BTCRecover will try different combinations and use a checksum to identify the correct seed phrase and password
+
+**Command**
+
+`python seedrecover.py --wallet-type blockchainpasswordv3 --mnemonic "carve witch manage yerevan yerevan yerevan yerevan yerevan yerevan yerevan yerevan hardly hamburgers insiders hamburgers ignite infernal" --mnemonic-length 17
+`

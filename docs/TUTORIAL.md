@@ -159,6 +159,7 @@ As you can see, the Windows command prompt was incapable of rendering some of th
      * Blockchain.com - it's usually named `wallet.aes.json`; if you don't have a backup of your wallet file, you can download one by running the `download-blockchain-wallet.py` tool in the `extract-scripts` directory if you know your wallet ID (and 2FA if enabled)
      * Coinomi - Please see the [Finding Coinomi Wallet Files](#finding-coinomi-wallet-files) section below. 
      * Electrum - `%appdata%\Electrum\wallets`
+     * imToken - Please see the [Finding imToken Wallet Files](#finding-imtoken-wallet-files) section below.
      * Litecoin-Qt - `%appdata%\Litecoin` (it's named `wallet.dat`)
      * Metamask (And Metamask clones like Binance Chain Wallet, Ronin Wallet, etc) - Please see the [Finding Metamask Wallet Files](#finding-metamask-wallet-files) section below.
      * MultiBit Classic - Please see the [Finding MultiBit Classic Wallet Files](#finding-multibit-classic-wallet-files) section below.
@@ -233,13 +234,15 @@ This string is what you will use with the `--yoroi-master-password` argument
 
 ### Finding MultiBit Classic Wallet Files ###
 
-*btcrecover* doesn’t operate directly on MultiBit Classic wallet files, instead it operates on MultiBit private key backup files. When you first add a password to your MultiBit Classic wallet, and after that each time you add a new receiving address or change your wallet password, MultiBit creates an encrypted private key backup file in a `key-backup` directory that's near the wallet file. These private key backup files are much faster to try passwords against (by a factor of over 1,000), which is why *btcrecover* uses them. For the default wallet that is created when MultiBit is first installed, this directory is located here:
+There are two different files that *btcrecover* can be used wth for this type of wallet. While you can run BTCRecover with MultiBit Classic .wallet files, you are far better off using MultiBit private key backup files. These private key backup files are much faster to try passwords against (Faster by a factor of over 1,000) These key backup files are created when you first add a password to your MultiBit Classic wallet, and after that each time you add a new receiving address or change your wallet password. 
+
+These are key backups are created in the`key-backup` directory that's near the wallet file.
+
+For the default wallet that is created when MultiBit is first installed, this directory is located here:
 
     %appdata%\MultiBit\multibit-data\key-backup
 
 The key files have names which look like `walletname-20140407200743.key`. If you've created additional wallets, their `key-backup` directories will be located elsewhere and it's up to you to locate them. Once you have, choose the most recent `.key` file and copy it into the directory containing `btcrecover.py` for it to use.
-
-For more details on locating your MultiBit private key backup files, see: <https://www.multibit.org/en/help/v0.5/help_fileDescriptions.html>
 
 ### Finding Metamask Wallet Files ###
 For Chrome Based Browsers, you will need to locate the data folder for the browser extension. You then use the path to this wallet folder with the --wallet argument.
@@ -252,8 +255,12 @@ For Ronin Wallet this is: %localappdata%\Google\Chrome\User Data\Default\Local E
 
 If you are trying to recover anything other than the most recent wallet, you will need to use the extract script to list all of the possible vaults that are in the extension data.
 
-For Firefox, you will need to retrieve your Metamask vault using the process described here:
+For Firefox and iOS, you will need to retrieve your Metamask vault using the process described here:
 https://metamask.zendesk.com/hc/en-us/articles/360018766351-How-to-use-the-Vault-Decryptor-with-the-MetaMask-Vault-Data
+
+For Mobile wallets (iOS and Android) the "wallet-file" that you pass BTCRecover is the file: `persist-root` You can find it using the process above and use it directly with BTCRecover. (No need to extract the vault data only, remove excess `\` characters, etc, all this is handled automatically)
+
+For Android devices, you will mostly need a "rooted" phone. The file you are after is: `/data/data/io.metamask/files/persistStore/persist-root`
 
 You can then copy/paste the vault data (from either Firefox or an extract script) in to a text file and use that directly with the --wallet argument.
 
@@ -268,26 +275,52 @@ For Android users, you will need to have a rooted phone which will allow you to 
 
 If there are mulitiple wallets there and you are not sure which is the correct one, the name of each wallet can be found in clear text at the end of the file. [See the test wallets included with this repository in ./btcrecover/test/test-wallets](https://github.com/3rdIteration/btcrecover/tree/master/btcrecover/test/test-wallets) for an example)
 
-### Downloading Dogechain.info wallet files ###
+### Finding imToken Wallet Files ###
+For Android users, you will need to have a rooted phone which will allow you to access the files.
+
+The main wallet file is located at `/data/data/im.token.app/files/wallets/identity.json`
+
+How to get root access on your particular phone is beyond the scope of this document, but be warned that some methods of rooting your phone will involve a factory reset.
+
+For iOS users, the file that you are looking for should have the same name and be in a similar location, but you will need a Jailbroken device to be able to access it.
+
+### Downloading Blockchain.com wallet files ###
 Downloading these kinds of wallet files id done via your browser, through the "Developer Tools" feature.
 
 Basically you need to attempt to log in to your wallet (even with the wrong password) and save the wallet file that is downloaded as part of this process.
 
-Once you are at the dogechain.info wallet login page, with the developer tools open in your browser, you will need to do the following steps:
+Once you are at the blockchain.com wallet login page, with the developer tools open in your browser, you will need to do the following steps:
 
 1) Select the Network tab
 
-2) Enter your Wallet ID
+2) Enter your Wallet ID, Enter a placeholder password (you can enter anything)
 
-3) Enter a placeholder password (you can enter anything)
+3) Approve the login via email authentication (if applicable)
 
-4) Click Log In (It will say that it failed to decrypt the wallet, but this is normal)
+4) Enter your 2fa code (if applicable) and click Log In (It will say "Wrong Password", but this is normal)
 
-5) Select "Responses"
+5) Select the "wallet" items
 
-6) Select the API items. (This may look slightly different if you have 2fa enabled, you may need to complete the 2fa at this step too)
+6) Select the "Response" tab 
 
-7) Once you have a response that looks like wallet data, copy it and paste it in to a text file. This is your wallet file...
+7) There are two possible ways that the wallet data may be presented. The main difference will be the filename for the response that contains the wallet payload.
+
+It will look like this:
+
+![Download Blockchain Wallet](download_blockchain_com_wallet.png)
+
+Or this
+
+![Download Blockchain Wallet Alt](download_blockchain_com_wallet_alt.png)
+
+In both instances, what we want is the "payload"
+
+Once you have a response that looks like wallet data, right click on the wallet item, copy it and paste it in to a file using a text editor...
+
+### Downloading Dogechain.info wallet files ###
+Downloading these kinds of wallet files id done via your browser, through the "Developer Tools" feature.
+
+Basically you need to attempt to log in to your wallet (even with the wrong password) and save the wallet file that is downloaded as part of this process.
 
 ![Download Dodgechain Wallet](download_dogechain_wallet.png)
 

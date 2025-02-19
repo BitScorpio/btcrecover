@@ -18,14 +18,16 @@
 # along with this program.  If not, see http://www.gnu.org/licenses/
 
 
-__version__ =  "1.10.0-CryptoGuide"
+__version__ =  "1.13.0-CryptoGuide"
 
+import binascii
 import struct, base64, io, mmap, ast, itertools, sys, gc, glob, math
 from os import path
 
 from datetime import datetime
 
 import lib.bitcoinlib as bitcoinlib
+from lib.base58_tools import base58_tools
 
 def supportedChains(magic):
     switcher={
@@ -142,6 +144,8 @@ class AddressSet(object):
             if textAddresses:
                 if addressType == 'Bech32':
                     print(bitcoinlib.encoding.pubkeyhash_to_addr_bech32(address),file=open("addresses.txt", "a"))
+                if addressType == 'Bech32m':
+                    print(bitcoinlib.encoding.pubkeyhash_to_addr_bech32(address, witver = 1),file=open("addresses.txt", "a"))
                 elif addressType == 'P2SH':
                     print(bitcoinlib.encoding.pubkeyhash_to_addr_base58(address, b'\x05'),file=open("addresses.txt", "a"))
                 elif addressType == 'P2PKH':
@@ -335,7 +339,7 @@ def varint(data, offset):
         return struct.unpack_from("<Q", data, offset + 1)[0], offset + 9
     assert False
 
-def create_address_db(dbfilename, blockdir, table_len, startBlockDate="2019-01-01", endBlockDate="3000-12-31", startBlockFile = 0, addressDB_yolo = False, outputToText = False, update = False, progress_bar = True, addresslistfile = None, multiFile = False):
+def create_address_db(dbfilename, blockdir, table_len, startBlockDate="2019-01-01", endBlockDate="3000-12-31", startBlockFile = 0, addressDB_yolo = False, outputToText = False, update = False, progress_bar = True, addresslistfile = None, multiFile = False, forcegzip = False):
     """Creates an AddressSet database and saves it to a file
 
     :param dbfilename: the file name where the database is saved (overwriting it)
@@ -347,6 +351,15 @@ def create_address_db(dbfilename, blockdir, table_len, startBlockDate="2019-01-0
     :param progress_bar: True to enable the progress bar
     :type progress_bar: bool
     """
+
+    if multiFile:
+        print("**********************************************")
+        print("The --multiFile argument is now obselete")
+        print()
+        print("The new way to handle multiple address lists to place them all in a folder and then pass the path to this folder with the --inputlistfile argument")
+        print("**********************************************")
+
+        exit()
 
     if update:
         print("Loading address database ...")
@@ -385,39 +398,80 @@ def create_address_db(dbfilename, blockdir, table_len, startBlockDate="2019-01-0
 
     if addresslistfile:
         import btcrecover.btcrseed
+        import pathlib
         print("Initial AddressDB Contains", len(address_set), "Addresses")
-        for i in range(9999):
-            if multiFile:
-                addresslistfile = addresslistfile[:-4] + '{:04d}'.format(i)
+
+        # Check whether we are looking at a file or a folder
+        fileList = pathlib.Path(addresslistfile)
+        if fileList.is_dir():
+            fileList = fileList.iterdir()
+        else:
+            fileList = [fileList]
+
+        # Iterate through the list files
+        for addresslistfile in fileList:
+            # Check whether we are parsing a compressed list or raw text
+            import gzip
+            if addresslistfile.suffix == ".gz" or forcegzip:
+                flexibleOpen = gzip.open
+            else:
+                flexibleOpen = open
+
             try:
-                with open(addresslistfile) as addressList_file:
-                    print("Loading: ", addresslistfile)
+                # Open the file
+                print("Loading: ", addresslistfile)
+                with flexibleOpen(addresslistfile) as addressList_file:
+
                     addresses_loaded = 0
                     for address in addressList_file:
                         try:
+                            # Check whether it's bytes or string (This will be different depending on whether we are looking at a .gz file or plain text)
+                            try:
+                                address = address.decode()
+                            except (UnicodeDecodeError, AttributeError):
+                                pass
+
                             # Strip any and handle  JSON data present for some cryptos in data exported from bigquery
                             if (address[2:11] == 'addresses'):
                                 address = address[15:-4]
 
+                            # Ignore nonce and balance in Eth tsv address lists exported from blockchair
+                            addressparts = address.split("	")
+                            if (len(addressparts) == 3 and len(addressparts[0]) == 40): #Looks like an Eth address
+                                address = '0x' + addressparts[0]
+                            elif (len(addressparts) == 2): #Probably a Bitcoin Address
+                                address = addressparts[0]
+
+
+                            #if wallet_type == :
+                            #    cur_hash160 = binascii.unhexlify(address.rstrip()[2:])
+                            #    address_set.add(cur_hash160)
+                            #    addresses_loaded += 1
+                                #print(address)
+                                #exit()
+                            #else:
+                            # Infer the address type based on the address formatting (This isn't ideal but is good enough for now)
                             if(address[0:2] != '0x'):
                                 address_set.add(btcrecover.btcrseed.WalletBase._addresses_to_hash160s([address.rstrip()]).pop())
                             else:
                                 address_set.add(btcrecover.btcrseed.WalletEthereum._addresses_to_hash160s([address.rstrip()]).pop())
                             addresses_loaded += 1
+
+
                             if(addresses_loaded % 1000000 == 0):
                                 print("Checked:", addresses_loaded, "addresses in current file,", len(address_set), "in unique Hash160s in AddressDB")
 
-                        except bitcoinlib.encoding.EncodingError:
-                            print("Skipping Invalid Address:", address.rstrip())
-                    print("Finished: ", addresslistfile)
-                    if not multiFile:
-                        break
-            except FileNotFoundError:
-                if multiFile:
-                    continue
-                else:
-                    print("File:", addresslistfile, " not found")
-                    exit()
+                        except Exception as e:
+                            print("Skipping Invalid Line: ", address.rstrip(), e)
+
+                    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "   ", end="")
+                    print("Checked:", addresses_loaded, "addresses in current file,", len(address_set),
+                          "in unique Hash160s in AddressDB")
+
+            except Exception as e:
+                print("Error loading file: ", e)
+
+            print("Finished: ", addresslistfile)
 
         print("Finished AddressDB Contains", len(address_set), "Addresses")
 
@@ -505,7 +559,7 @@ def create_address_db(dbfilename, blockdir, table_len, startBlockDate="2019-01-0
                     if datetime.strptime(startBlockDate + " 00:00:00", '%Y-%m-%d %H:%M:%S') <= blockDate and datetime.strptime(endBlockDate + " 23:59:59", '%Y-%m-%d %H:%M:%S') >= blockDate:
 
                         for tx_num in range(tx_count):
-
+                            #txDataPlus = block[offset:offset + 100]
                             offset += 4                                                 # skips 4-byte tx version
                             is_bip144 = block[offset] == 0                          # bip-144 marker
                             if is_bip144:
@@ -518,10 +572,6 @@ def create_address_db(dbfilename, blockdir, table_len, startBlockDate="2019-01-0
                             for txout_num in range(txout_count):
                                 pkscript_len, offset = varint(block, offset + 8)        # skips 8-byte satoshi count
 
-                                #if print_debug:
-                                #    print("Tx Data: ", block[offset:offset+100].encode("hex")) #Print all TX data (plus more for debugging)
-
-
                                 # If this is a P2PKH script (OP_DUP OP_HASH160 PUSH(20) <20 address bytes> OP_EQUALVERIFY OP_CHECKSIG)
                                 if pkscript_len == 25 and block[offset:offset+3] == b"\x76\xa9\x14" and block[offset+23:offset+25] == b"\x88\xac":
                                     address_set.add(block[offset+3:offset+23],outputToText,'P2PKH')
@@ -529,16 +579,22 @@ def create_address_db(dbfilename, blockdir, table_len, startBlockDate="2019-01-0
                                     address_set.add(block[offset+2:offset+22],outputToText,'P2SH')
                                 elif block[offset:offset+2] == b"\x00\x14": #Check for Native Segwit Address
                                     address_set.add(block[offset+2:offset+22],outputToText,'Bech32')
+                                elif block[offset:offset+2] == b"\x51\x20": #Check for Taproot Address
+                                    address_set.add(block[offset + 2:offset + 34], outputToText, 'Bech32m')
 
                                 offset += pkscript_len                                  # advances past the pubkey script
                             if is_bip144:
                                 for txin_num in range(txin_count):
-                                    stackitem_count, offset = varint(block, offset)
-                                    for stackitem_num in range(stackitem_count):
-                                        stackitem_len, offset = varint(block, offset)
-                                        offset += stackitem_len                         # skips this stack item
-                            offset += 4                                                 # skips the 4-byte locktime
+                                    try:
+                                        stackitem_count, offset = varint(block, offset)
+                                        for stackitem_num in range(stackitem_count):
+                                            stackitem_len, offset = varint(block, offset)
+                                            offset += stackitem_len                         # skips this stack item
+                                    except IndexError:
+                                        # There was a odd transaction on the LTC network that seemed to break the parsing, TXID:49d38dd2978f1f402c62a6791893557da86cc939eabc6710bbf733333fe42667
+                                        print("Skipping Transaction with Unknown Script Type") # Occasionally BIP144 transactions will have issues being parsed by the code above.
 
+                            offset += 4                                                 # skips the 4-byte locktime
 
                     header = blockfile.read(8)  # read in the next magic and remaining block length
 

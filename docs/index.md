@@ -22,7 +22,7 @@ If you have found a bug, please open an issue on Github here: [https://github.co
     * Bitcoin
     * Bitcoin Cash
     * Cardano (Shelley Era Addresses)
-    * Cosmos (Atom)
+    * Cosmos (Atom) Any many other Cosmos Chains (Nym, GravityBridge, etc)
     * Dash
     * DigiByte
     * Dogecoin
@@ -31,10 +31,14 @@ If you have found a bug, please open an issue on Github here: [https://github.co
     * Helium
     * Litecoin
     * Monacoin
+    * MultiversX
     * Polkadot (sr25519, like those produced by polkadot.js)
     * Ripple
+    * Secret Network
     * Solana
+    * Stacks
     * Stellar
+    * Tezos
     * Tron
     * Vertcoin
     * Zilliqa
@@ -65,16 +69,20 @@ If you have found a bug, please open an issue on Github here: [https://github.co
          * [TREZOR](https://www.bitcointrezor.com/)
          * [Ledger](https://www.ledgerwallet.com/)
          * [Keepkey](https://shapeshift.io/keepkey/)
+         * [Blockstream Jade](https://blockstream.com/jade/)
          * [Jaxx](https://jaxx.io/)
          * [Coinomi](https://www.coinomi.com/)
          * [Exodus](https://www.exodus.io/)
          * [MyEtherWallet](https://www.myetherwallet.com/)
          * [Bither](https://bither.net/)
          * [Blockchain.com](https://blockchain.com/wallet)
+         * [Trust Wallet](https://trustwallet.com/)
          * [Encrypted (BIP-38) Paper Wallet Support (Eg: From Bitaddress.org)](https://bitaddress.org) Also works with altcoin forks like liteaddress.org, paper.dash.org, etc...
          * Brainwallets
             * Sha256(Passphrase) brainwallets (eg: Bitaddress.org, liteaddress.org, paper.dash.org)
             * sCrypt Secured Brainwallets (Eg: Warpwallet, Memwallet)
+     * Ethereum Validator BIP39 Seed Recovery
+     * [Blockchain.com legacy wallet recovery mnemonic](https://login.blockchain.com/wallet/recover-wallet)
  * Bitcoin wallet password recovery support for:
      * [Bitcoin Core](https://bitcoincore.org/)
      * [MultiBit HD](https://multibit.org/) and [MultiBit Classic](https://multibit.org/help/v0.5/help_contents.html)
@@ -84,12 +92,14 @@ If you have found a bug, please open an issue on Github here: [https://github.co
      * [mSIGNA (CoinVault)](https://ciphrex.com/products/)
      * [Blockchain.com](https://blockchain.com/wallet)
      * [block.io](https://block.io/) (Recovery of wallet "Secret PIN")
-     * [pywallet --dumpwallet](https://github.com/jackjack-jj/pywallet) of Bitcoin Unlimited/Classic/XT/Core wallets
-     * [Bitcoin Wallet for Android/BlackBerry](https://play.google.com/store/apps/details?id=de.schildbach.wallet) spending PINs and encrypted backups
+     * [btc.com (aka blocktrail)](btc.com) (Recovery of wallet password, needed to decrypt the PDF backup sheets)
+     * [pywallet --dumpwallet](https://github.com/jackjack-jj/pywallet) o*f Bitcoin Unlimited/Classic/XT/Core wallets
+     * [Bitcoin Wallet for Android/BlackBerry](https://play.google.com/store/apps/details?id=de.schil*dbach.wallet) spending PINs and encrypted backups
      * [KnC Wallet for Android](https://github.com/kncgroup/bitcoin-wallet) encrypted backups
      * [Bither](https://bither.net/)
  * Altcoin password recovery support for most wallets derived from one of those above, including:
      * [Coinomi](https://www.coinomi.com/en/) (Only supports password protected wallets)
+     * [imToken](https://token.im/)
      * [Metamask](https://metamask.io/) (And Metamask clones like Binance Chain Wallet, Ronin Wallet, etc.)
      * [Litecoin Core](https://litecoin.org/)
      * [Electrum-LTC](https://electrum-ltc.org/) (For Legacy and Segwit Wallets. Set --bip32-path "m/0'/0" for a Segwit wallet, leave bip32-path blank for Legacy... No support for 2fa wallets...)

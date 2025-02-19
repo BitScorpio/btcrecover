@@ -24,12 +24,12 @@ A rought guide of the blockchain, AddressDB size and optimal parameters as at Ja
 
 | Coin         | Blockchain Size | AddressDB Size  | Required DBLength |
 | -------------|:---------------:| ---------------:|------------------:|
-| Bitcoin      | 324 GB          | 16 GB            | 31                |
+| Bitcoin      | 561 GB          | 16 GB            | 31                |
 | Bitcoin Cash | 155 GB          | 4 GB            | 29                |
-| Litecoin     | 39GB            | 1 GB            | 27                |
+| Litecoin     | 133 GB            | 4 GB            | 29                |
 | Vertcoin     | 5 GB            | 32 MB           | 22                |
 | Monacoin     | 2.5 GB          | 32 MB           | 22                |
-| Ethereum     | N/A (AddressList from BigQuery with ~120 million addresses)           | 2 GB             | 28
+| Ethereum     | N/A (AddressList from BigQuery with ~250 million addresses)           | 4 GB             | 29
 | Dogecoin      | N/A (Addresslist from BigQuery with ~60 million addresses) | 1GB | 27 |
 
 _If in doubt, just download the full blockchain and parse it in it entritiy... The default will be fine..._
@@ -126,6 +126,29 @@ _**Note:** Data on Google BigQuery is only updated every 1-2 months, sometimes l
 [All BCH Addresses](https://console.cloud.google.com/bigquery?sq=871259226971:1cb1a218b17d4498bb3d9103e5b2fb3a)
 
 [All LTC Addresses](https://console.cloud.google.com/bigquery?sq=871259226971:13e998b9bf864df8b7c0772f4913b28d)
+
+### Generating Address Lists from Blockchair Database Dumps
+Blockchair distribute a range of different database dumps, specifically lists of addresses and balance. They can be found here: <https://blockchair.com/dumps#database>
+
+The .tsv.gz files can be directly used to create address databases without decompressing the file via the --inputlist argument.
+
+**Note: These lists of addresses only include addresses that currently have a balance, as opposed to the other methods here which will include all addresses which have ever had a balance. What this means is that if you use this data from blockchair, you may run in to issues with address-generation-limits. (Which are normally not a consideration when using address databases)**
+
+### Generating Address Lists using Ethereum-ETL
+Confirmed working for: 
+* Binance Smart Chain with Geth Node installed as per: <https://docs.bnbchain.org/docs/validator/fullnode>
+
+For EVM type chains (eg: Binance Smart Chain), another option is to use the Ethereum-ETL tool. This allows you to query a full node (Running Geth or Parity, or a fork of these) and retrieve human readable CSV data representing transations.
+
+Once you have a Geth-Like node running, you can retrieve ETL data with a command like:
+
+``
+ethereumetl export_blocks_and_transactions --start-block STARTBLOCKNUMBER --end-block ENDBLOCKNUMBER --provider-uri http://FULLNODEIP:8545 --blocks-output LOCAL_BLOCKS_CSV_FILE --transactions-output LOCAL_TRANSACTIONS_CSV_FILE
+``
+
+Once you exported the transactions, you can then use the `addrListsFromETLTransactions.py` file in the `utilities` folder within this repository to produce files containing lists of addresses. These address lists can then be used to create an addressDB using the same process covered earlier.
+
+The key thing to understand with this approach is that you will need several TB worth of disk space to store/run and several TB worth of additional space for the full Ethereum ETL output. (So you probably want about 10TB of space...)
 
 ### Checking/Validating AddressDBs
 You can use the check-address-db.py file to test any addresslist file for whether it includes any given addresses.
